@@ -1,0 +1,22 @@
+# Screenshot comparison output
+screenshots/
+comparison-results/
+playwright-report/
+test-results/
+
+# Playwright
+.playwright/
+
+# Screenshots
+*.png
+!public/**/*.png
+!images/**/*.png
+
+# Comparison diffs
+*_diff.png
+*_prod.png
+*_preview.png
+
+# Reports
+comparison-report.html
+comparison-summary.json

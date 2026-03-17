@@ -1,0 +1,11 @@
+production_url,production_status,preview_url,preview_status
+https://www.fasting.nu/,200,https://www.fasting.nu/,200
+https://www.fasting.nu/user/login,404,https://www.fasting.nu/user/login,404
+https://www.fasting.nu/pfizer-login,200,https://www.fasting.nu/pfizer-login,200
+https://www.fasting.nu/vem-kan-smittas,200,https://www.fasting.nu/vem-kan-smittas,200
+https://www.fasting.nu/sa-drabbar-tbe,200,https://www.fasting.nu/sa-drabbar-tbe,200
+https://www.fasting.nu/vaccin-kan-skydda,200,https://www.fasting.nu/vaccin-kan-skydda,200
+https://www.fasting.nu/om-tbe-och-fastingar,200,https://www.fasting.nu/om-tbe-och-fastingar,200
+https://www.fasting.nu/fragor-och-svar-0,200,https://www.fasting.nu/fragor-och-svar-0,200
+https://www.fasting.nu/hitta-tbe-vaccinator-nara-dig,200,https://www.fasting.nu/hitta-tbe-vaccinator-nara-dig,200
+https://www.fasting.nu/startsida,200,https://www.fasting.nu/startsida,200

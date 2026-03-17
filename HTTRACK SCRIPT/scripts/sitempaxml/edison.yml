@@ -1,0 +1,18 @@
+framework: npm
+npm: True
+skel_package: pfizer-skel-lite-npm
+skel_version: 1.0.1
+
+public_data:
+    default:
+        site_url: https://yoursite-preview.pfizerstatic.io
+        additional_path: []
+        exclude_path: []
+    live:
+        site_url: https://www.yoursite.gr
+        additional_path: []
+        exclude_path: []
+    test:
+        site_url: https://yoursite-test.pfizerstatic.io
+        additional_path: []
+        exclude_path: []

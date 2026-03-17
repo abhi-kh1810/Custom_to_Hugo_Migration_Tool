@@ -1,0 +1,16 @@
+{
+  "name": "analytics-checker",
+  "version": "1.0.0",
+  "description": "Check if Adobe Analytics fires on a list of URLs using Playwright.",
+  "main": "check-analytics.js",
+  "type": "module",
+  "scripts": {
+    "start": "node check-analytics.js"
+  },
+  "dependencies": {
+    "playwright": "^1.42.0",
+    "csv-writer": "^1.6.0",
+    "xml2js": "^0.6.2",
+    "node-fetch": "^3.3.2"
+  }
+}

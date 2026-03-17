@@ -1,0 +1,37 @@
+{
+  "name": "screenshot-comparison-testing",
+  "version": "1.0.0",
+  "description": "Screenshot comparison tool for testing production vs preview environments",
+  "main": "screenshot-comparison.js",
+  "scripts": {
+    "test": "node screenshot-comparison.js",
+    "test:visual": "playwright test screenshot-comparison.spec.js",
+    "test:desktop": "playwright test screenshot-comparison.spec.js --grep desktop",
+    "test:tablet": "playwright test screenshot-comparison.spec.js --grep tablet",
+    "test:mobile": "playwright test screenshot-comparison.spec.js --grep mobile",
+    "report": "playwright show-report",
+    "setup": "npm install && npx playwright install chromium",
+    "quick": "node cli.js quick",
+    "all": "node cli.js both"
+  },
+  "keywords": [
+    "screenshot",
+    "comparison",
+    "visual-testing",
+    "playwright",
+    "testing"
+  ],
+  "author": "Pfizer",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {
+    "@playwright/test": "^1.40.0",
+    "playwright": "^1.40.0",
+    "xml2js": "^0.6.2",
+    "pixelmatch": "^5.3.0",
+    "pngjs": "^7.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
