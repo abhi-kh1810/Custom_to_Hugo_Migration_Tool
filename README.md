@@ -152,7 +152,7 @@ Then open [http://localhost:5173](http://localhost:5173) in your browser.
 ### Upload & Convert HTML files
 
 1. Go to **Create Project**.
-2. Enter a project name and upload your HTML, CSS, JS, and image files step by step.
+2. Enter a project name and upload your HTML, CSS, JavaScript, and image files step by step.
 3. Generate the Hugo project and preview/download it.
 
 ---
