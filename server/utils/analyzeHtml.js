@@ -41,7 +41,7 @@ function escapeHugoDelimiters(html) {
  * Identify semantic HTML5 tags present in an HTML string.
  * Returns an object keyed by tag name with count & first-occurrence attrs.
  */
-export function identifySemanticTags(html) {
+function identifySemanticTags(html) {
   const semanticTags = [
     'main', 'article', 'section', 'aside', 'nav', 'header', 'footer',
     'figure', 'figcaption', 'details', 'summary', 'dialog', 'time', 'mark',
@@ -77,7 +77,7 @@ export function identifySemanticTags(html) {
  * e.g.  class="node node--type-page node--promoted"
  *       → nodeType = "page"
  */
-export function extractNodeTypeBlocks(html) {
+function extractNodeTypeBlocks(html) {
   const results = [];
   const tagRe = /<(article|div|section|li|span)\b([^>]*\bnode--type-([\w-]+)\b[^>]*)>/gi;
   let tagMatch;
@@ -125,7 +125,7 @@ export function extractNodeTypeBlocks(html) {
  * Normalize HTML for structural comparison.
  * Collapses whitespace and strips dynamic/volatile attributes.
  */
-export function normalizeHtml(html) {
+function normalizeHtml(html) {
   return html
     .replace(/\s+/g, ' ')
     .replace(/\bdata-history-node-id=["'][^"']*["']/gi, '')
@@ -148,6 +148,8 @@ export function normalizeHtml(html) {
  *   fileReports         : [ { file, semanticTags, nodeTypes } ]
  * }
  */
+export { writeNodePartials, writeStructuralPartials, extractDrupalComponents, writeDrupalComponentPartials };
+
 export function analyzeHtmlFiles(siteSrcDir) {
   const fileReports         = [];
   const semanticTagsSummary = {};
@@ -235,7 +237,7 @@ export function analyzeHtmlFiles(siteSrcDir) {
  * node--type-<nodeType> blocks (that structurally match canonicalHtml)
  * with the Hugo partial reference string.
  */
-export function replaceNodeBlocksInLayouts(layoutsDir, nodeType, canonicalHtml, partialRef, logs) {
+function replaceNodeBlocksInLayouts(layoutsDir, nodeType, canonicalHtml, partialRef, logs) {
   const norm = normalizeHtml(canonicalHtml);
   const nodesPartialDir = path.resolve(layoutsDir, 'partials', 'nodes');
 
@@ -325,7 +327,7 @@ export function replaceNodeBlocksInLayouts(layoutsDir, nodeType, canonicalHtml, 
  *
  * Returns array of { nodeType, partialFileName, filesFound }.
  */
-export function writeNodePartials(nodeTypes, layoutsDir, logs) {
+function writeNodePartials(nodeTypes, layoutsDir, logs) {
   const nodesPartialDir = path.join(layoutsDir, 'partials', 'nodes');
   fs.mkdirSync(nodesPartialDir, { recursive: true });
 
@@ -531,7 +533,7 @@ const STRUCTURAL_PATTERNS = [
  *   startIndex  : character position in source HTML
  * }
  */
-export function extractStructuralBlocks(html) {
+function extractStructuralBlocks(html) {
   const results = [];
   const tagRe = /<(div|nav|ul|ol|section|article|aside|header|footer)\b([^>]*)>/gi;
   let m;
@@ -620,7 +622,7 @@ function findStructuralPatternMatch(tag, attrs) {
 /**
  * Extract banner data from HTML
  */
-export function extractBannerData(html) {
+function extractBannerData(html) {
   const dom = new JSDOM(html);
   const doc = dom.window.document;
   
@@ -641,7 +643,7 @@ export function extractBannerData(html) {
 /**
  * Extract breadcrumb data from HTML
  */
-export function extractBreadcrumbData(html) {
+function extractBreadcrumbData(html) {
   const dom = new JSDOM(html);
   const doc = dom.window.document;
   
@@ -673,7 +675,7 @@ export function extractBreadcrumbData(html) {
 
  /* Extract carousel/banner slides data from HTML
  */
-export function extractCarouselItems(html) {
+function extractCarouselItems(html) {
   const dom = new JSDOM(html);
   const doc = dom.window.document;
   
@@ -710,67 +712,110 @@ export function extractCarouselItems(html) {
 /**
  * Extract main menu data from HTML
  */
-export function extractMenuData(html) {
-  const dom = new JSDOM(html);
-  const doc = dom.window.document;
-  
-  // Look for different menu structures
-  let menu = doc.querySelector('.menu--main, #block-pfkpsg-main-menu, nav[role="navigation"]');
-  
-  // Check for storefront navigation
-  if (!menu) {
-    menu = doc.querySelector('.storefront-nav, nav.storefront-nav');
-  }
-  
-  if (!menu) return null;
-  
+// CSS class/id fragments that definitively mark a nav as utility (skip it)
+const SKIP_NAV_FRAGMENTS = [
+  'account', 'user-login', 'menu--account', 'menu--user',
+  'language-switcher', 'lang-switcher', 'block-language',
+  'social', 'skip-link', 'pager', 'pagination',
+];
+
+// CSS class/id fragments that heavily deprioritise (but don't skip) a nav
+const DEPRIORITIZE_NAV_CLASSES = [
+  'breadcrumb', 'search', 'utility', 'secondary', 'tools',
+];
+
+// CSS class/id fragments that suggest a nav IS a primary/structural navigation
+const PRIORITIZE_NAV_CLASSES = [
+  'menu--main', 'main-menu', 'primary-menu', 'nav-main', 'site-navigation',
+  'menu--primary', 'main', 'primary',
+  'header',
+  'menu--footer', 'footer',
+];
+
+/**
+ * Generic helper: extract menu items from any nav/ul element.
+ * Finds the first `ul` inside `containerEl` that has direct `li` children
+ * and returns top-level link items with optional submenu.
+ */
+function extractNavItems(containerEl) {
+  const allUls = Array.from(containerEl.querySelectorAll('ul'));
+  const topUl  = allUls.find(ul => ul.querySelectorAll(':scope > li').length > 0);
+  if (!topUl) return null;
+
   const items = [];
-  
-  // Handle storefront-nav structure (Breakthrough Change Accelerator)
-  const storefrontItems = menu.querySelectorAll(':scope > ul > li');
-  if (storefrontItems.length > 0) {
-    for (const li of storefrontItems) {
-      const link = li.querySelector('a');
-      if (link) {
-        items.push({
-          text: link.textContent.trim(),
-          url: link.getAttribute('href') || '',
-          submenu: []
-        });
-      }
-    }
-    return items.length > 0 ? { items } : null;
-  }
-  
-  // Handle menu--main structure (KnowPneumonia style)
-  const topLevelItems = menu.querySelectorAll(':scope > .scroll-block > .nav-list-box > ul.menu > li.menu-item');
-  
-  for (const li of topLevelItems) {
+  for (const li of topUl.querySelectorAll(':scope > li')) {
     const link = li.querySelector(':scope > a');
-    const submenu = li.querySelector(':scope > ul.menu');
-    const item = {
-      text: link ? link.textContent.trim() : '',
-      url: link ? link.getAttribute('href') : '',
-      submenu: []
-    };
-    
-    if (submenu) {
-      const subItems = submenu.querySelectorAll(':scope > li.menu-item > a');
-      for (const subLink of subItems) {
-        item.submenu.push({
-          text: subLink.textContent.trim(),
-          url: subLink.getAttribute('href')
-        });
+    if (!link) continue;
+    const text = link.textContent.trim();
+    const url  = link.getAttribute('href') || '';
+    if (!text) continue;
+
+    const item = { text, url, submenu: [] };
+
+    const subUl = li.querySelector(':scope > ul');
+    if (subUl) {
+      for (const subLi of subUl.querySelectorAll(':scope > li')) {
+        const subLink = subLi.querySelector('a');
+        if (subLink) {
+          item.submenu.push({
+            text: subLink.textContent.trim(),
+            url:  subLink.getAttribute('href') || '',
+          });
+        }
       }
     }
-    
+
     items.push(item);
   }
-  
+
   return items.length > 0 ? { items } : null;
 }
 
-export function extractTabMenuItems(html) {
+function extractMenuData(html) {
+  const dom = new JSDOM(html);
+  const doc = dom.window.document;
+
+  // Build candidate list: every <nav> AND every element with role="navigation"
+  // that contains at least one <li> (real menu lists).
+  const navEls = Array.from(doc.querySelectorAll('nav, [role="navigation"]'));
+
+  let bestNav   = null;
+  let bestScore = -Infinity;
+
+  for (const nav of navEls) {
+    const classStr = (nav.getAttribute('class') || '').toLowerCase();
+    const idStr    = (nav.getAttribute('id')    || '').toLowerCase();
+    const combined = classStr + ' ' + idStr;
+
+    // Hard-skip: utility / account / language navs — never use these
+    if (SKIP_NAV_FRAGMENTS.some(f => combined.includes(f))) continue;
+
+    // Must contain at least one list item
+    const itemCount = nav.querySelectorAll('li').length;
+    if (itemCount === 0) continue;
+
+    // Base score = number of items (more items → richer navigation)
+    let score = itemCount * 2;
+
+    // Deprioritise secondary/utility menus
+    if (DEPRIORITIZE_NAV_CLASSES.some(c => combined.includes(c))) score -= 20;
+
+    // Strongly boost known main/primary/footer menu signals
+    if (PRIORITIZE_NAV_CLASSES.some(c => combined.includes(c))) score += 30;
+
+    // Extra boost for explicitly named "main" nav
+    if (combined.includes('menu--main') || combined.includes('main-menu'))     score += 50;
+    if (combined.includes('menu--primary') || combined.includes('primary-menu')) score += 40;
+    if (combined.includes('menu--footer') || combined.includes('footer-menu'))  score += 10;
+
+    if (score > bestScore) { bestScore = score; bestNav = nav; }
+  }
+
+  if (!bestNav) return null;
+  return extractNavItems(bestNav);
+}
+
+function extractTabMenuItems(html) {
   const dom = new JSDOM(html);
   const doc = dom.window.document;
   
@@ -828,7 +873,7 @@ function extractBalancedStructuralBlock(html, tag, startIndex, openTagLength) {
  * Walk all .html files under layoutsDir and replace occurrences of
  * structural blocks (that match canonicalHtml) with the Hugo partial reference.
  */
-export function replaceStructuralBlocksInLayouts(layoutsDir, type, canonicalHtml, partialRef, logs) {
+function replaceStructuralBlocksInLayouts(layoutsDir, type, canonicalHtml, partialRef, logs) {
   const structuresPartialDir = path.resolve(layoutsDir, 'partials', 'structures');
   const nodesPartialDir = path.resolve(layoutsDir, 'partials', 'nodes');
 
@@ -880,7 +925,8 @@ export function replaceStructuralBlocksInLayouts(layoutsDir, type, canonicalHtml
             replacement = '{{ partial "structures/banner.html" .Params.banner }}';
             break;
           case 'menu':
-            replacement = '{{ partial "structures/menu.html" .Params.menu }}';
+            // navMenu avoids Hugo's reserved built-in 'menu' front matter key
+            replacement = '{{ partial "structures/menu.html" .Params.navMenu }}';
             break;
           case 'breadcrumb':
             replacement = '{{ partial "structures/breadcrumb.html" .Params.breadcrumb }}';
@@ -923,7 +969,7 @@ export function replaceStructuralBlocksInLayouts(layoutsDir, type, canonicalHtml
  *
  * Returns array of { type, partialFileName, occurrences, filesFound }
  */
-export function writeStructuralPartials(siteSrcDir, layoutsDir, logs) {
+function writeStructuralPartials(siteSrcDir, layoutsDir, logs) {
   const structuresDir = path.join(layoutsDir, 'partials', 'structures');
   fs.mkdirSync(structuresDir, { recursive: true });
 
@@ -1085,8 +1131,54 @@ function buildStructuralPartial(type, outerHtml, occurrenceCount) {
   return `${header}\n${html}\n`;
 }
 
+// ═══════════════════════════════════════════════════════════════════
+//  DOM SERIALIZATION HELPERS  (used by dynamic partial builders)
+// ═══════════════════════════════════════════════════════════════════
+
+/** Serialize an element's opening tag preserving all original attributes. */
+function serializeOpenTag(el) {
+  const tag = el.tagName.toLowerCase();
+  if (!el.attributes || el.attributes.length === 0) return `<${tag}>`;
+  const attrs = Array.from(el.attributes).map(a => `${a.name}="${a.value}"`).join(' ');
+  return `<${tag} ${attrs}>`;
+}
+
+/** Get the element's close tag. */
+function serializeCloseTag(el) {
+  return `</${el.tagName.toLowerCase()}>`;
+}
+
 /**
- * Build dynamic tab-menu partial
+ * Returns ancestor elements from outermost down to el's direct parent,
+ * stopping (exclusive) at stopEl.
+ */
+function getAncestorChain(el, stopEl) {
+  const ancestors = [];
+  let cur = el.parentElement;
+  while (cur && cur !== stopEl) {
+    ancestors.unshift(cur);
+    cur = cur.parentElement;
+  }
+  return ancestors;
+}
+
+/**
+ * Strip common state/modifier suffixes from a CSS class list string
+ * so only base structural classes remain.
+ */
+function getBaseClasses(classStr) {
+  const stateWords = ['active', 'is-active', 'current', 'selected', 'open', 'is-open', 'visible', 'hidden'];
+  const stateSuffixes = ['--active', '--active-trail', '--expanded', '--collapsed', '--open', '--selected', '--current'];
+  return (classStr || '')
+    .split(/\s+/)
+    .filter(c => c && !stateWords.includes(c) && !stateSuffixes.some(s => c.endsWith(s)))
+    .join(' ')
+    .trim();
+}
+
+/**
+ * Build dynamic tab-menu partial derived from actual source HTML structure.
+ * Extracts real class names and container elements — works for any site.
  */
 function buildDynamicTabMenuPartial(outerHtml, occurrenceCount) {
   const header = [
@@ -1094,45 +1186,83 @@ function buildDynamicTabMenuPartial(outerHtml, occurrenceCount) {
     `  Structural partial: tab-menu (dynamic)`,
     `  Auto-generated by Hugo Converter.`,
     `  Occurrences found: ${occurrenceCount}`,
-    `  `,
-    `  Preserves structure, makes menu items dynamic.`,
-    `  `,
-    `  Usage:`,
-    `    {{ partial "structures/tab-menu.html" .Params.tabMenu }}`,
-    `  `,
+    `  Structure derived from source HTML — adapts to any site.`,
+    `  Usage: {{ partial "structures/tab-menu.html" .Params.tabMenu }}`,
     `  Expected front matter:`,
     `  tabMenu:`,
     `    items:`,
     `      - text: "HOME"`,
-    `        url: "../covid-19-my-reasons"`,
-    `      - text: "SYMPTOMS"`,
-    `        url: "#symptoms"`,
+    `        url: "/home"`,
+    `      - text: "ABOUT"`,
+    `        url: "/about"`,
     `*/}}`,
   ].join('\n');
 
-  const template = `
-{{ $menuItems := .items }}
+  try {
+    const dom = new JSDOM(outerHtml);
+    const doc = dom.window.document;
+    const body = doc.body;
 
-{{ if $menuItems }}
-<div class="field__item page-menu covid-tab-menu">
-  <div class="paragraph paragraph--type--covid-page-menu paragraph--view-mode--default">
-    <div class="field field--name-field-menu-item field--type-link field--label-hidden field__items">
-      {{ range $menuItems }}
-        <div class="field__item">
-          <a href="{{ .url }}">{{ .text }}</a>
-        </div>
-      {{ end }}
-    </div>
-  </div>
-</div>
-{{ end }}
-`;
+    const links = Array.from(body.querySelectorAll('a[href]'));
+    if (links.length === 0) {
+      return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
+    }
 
-  return header + '\n' + template;
+    const firstLink = links[0];
+    const root = body.firstElementChild;
+
+    // The "item" wrapper is the link's parent when it is NOT the root container
+    const itemWrapper =
+      firstLink.parentElement &&
+      firstLink.parentElement !== body &&
+      firstLink.parentElement !== root
+        ? firstLink.parentElement
+        : null;
+
+    const linkClass    = firstLink.getAttribute('class') || '';
+    const linkClassAttr = linkClass ? ` class="${linkClass}"` : '';
+    const linkTpl       = `<a href="{{ .url }}"${linkClassAttr}>{{ .text }}</a>`;
+
+    let itemTpl;
+    if (itemWrapper) {
+      const iTag       = itemWrapper.tagName.toLowerCase();
+      const iClass     = itemWrapper.getAttribute('class') || '';
+      const iClassAttr = iClass ? ` class="${iClass}"` : '';
+      itemTpl = `<${iTag}${iClassAttr}>${linkTpl}</${iTag}>`;
+    } else {
+      itemTpl = linkTpl;
+    }
+
+    // Build ancestor wrapper chain
+    const itemsParent     = itemWrapper ? itemWrapper.parentElement : (root || body);
+    const innerContainer  = itemsParent === body ? root : itemsParent;
+    const ancestors       = getAncestorChain(innerContainer === body ? (root || body) : innerContainer, body);
+    const wrapOpen        = ancestors.map(a => serializeOpenTag(a)).join('\n');
+    const wrapClose       = ancestors.slice().reverse().map(a => serializeCloseTag(a)).join('\n');
+    const innerOpen       = innerContainer ? serializeOpenTag(innerContainer) : '';
+    const innerClose      = innerContainer ? serializeCloseTag(innerContainer) : '';
+
+    const template = [
+      `{{ $tabItems := .items }}`,
+      `{{ if $tabItems }}`,
+      wrapOpen,
+      innerOpen,
+      `  {{ range $tabItems }}`,
+      `    ${itemTpl}`,
+      `  {{ end }}`,
+      innerClose,
+      wrapClose,
+      `{{ end }}`,
+    ].filter(Boolean).join('\n');
+
+    return `${header}\n${template}\n`;
+  } catch {
+    return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
+  }
 }
 
 /**
- * Build dynamic breadcrumb partial
+ * Build dynamic breadcrumb partial derived from actual source HTML structure.
  */
 function buildDynamicBreadcrumbPartial(outerHtml, occurrenceCount) {
   const header = [
@@ -1140,9 +1270,8 @@ function buildDynamicBreadcrumbPartial(outerHtml, occurrenceCount) {
     `  Structural partial: breadcrumb (dynamic)`,
     `  Auto-generated by Hugo Converter.`,
     `  Occurrences found: ${occurrenceCount}`,
-    `  `,
+    `  Structure derived from source HTML — adapts to any site.`,
     `  Usage: {{ partial "structures/breadcrumb.html" .Params.breadcrumb }}`,
-    `  `,
     `  Expected front matter:`,
     `  breadcrumb:`,
     `    items:`,
@@ -1155,35 +1284,89 @@ function buildDynamicBreadcrumbPartial(outerHtml, occurrenceCount) {
     `*/}}`,
   ].join('\n');
 
-  const template = `
-{{ $breadcrumb := . }}
-{{ if $breadcrumb.items }}
-<div id="block-breadcrumbs">
-  <div class="container">
-    <nav role="navigation" aria-labelledby="system-breadcrumb">
-      <h2 id="system-breadcrumb" class="visually-hidden">Breadcrumb</h2>
-      <ul class="breadcrumbs">
-        {{ range $breadcrumb.items }}
-        <li class="breadcrumbs__item{{ if .active }} breadcrumbs__item--active{{ end }}">
-          {{ if .url }}
-            <a href="{{ .url }}" class="breadcrumbs__link">{{ .text }}</a>
-          {{ else }}
-            {{ .text }}
-          {{ end }}
-        </li>
-        {{ end }}
-      </ul>
-    </nav>
-  </div>
-</div>
-{{ end }}
-`;
+  try {
+    const dom = new JSDOM(outerHtml);
+    const doc = dom.window.document;
+    const body = doc.body;
 
-  return header + '\n' + template;
+    // Find the breadcrumb list element
+    const list =
+      body.querySelector('ol') ||
+      body.querySelector('ul.breadcrumbs') ||
+      body.querySelector('ul.breadcrumb') ||
+      body.querySelector('nav ul') ||
+      body.querySelector('ul');
+
+    if (!list) {
+      return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
+    }
+
+    const listTag       = list.tagName.toLowerCase();
+    const listClass     = list.getAttribute('class') || '';
+    const listClassAttr = listClass ? ` class="${listClass}"` : '';
+
+    const allLi = Array.from(list.querySelectorAll(':scope > li'));
+    if (allLi.length === 0) {
+      return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
+    }
+
+    // Identify normal vs active items
+    const normalLi = allLi.find(li => li.querySelector('a'));
+    const activeLi = allLi.find(li =>
+      !li.querySelector('a') ||
+      li.className.includes('active') ||
+      li.className.includes('current')
+    );
+
+    const liBaseClass    = getBaseClasses((normalLi || allLi[0]).getAttribute('class') || '');
+    const activeModifier = activeLi
+      ? (activeLi.getAttribute('class') || '')
+          .split(' ')
+          .find(c => c.includes('active') || c.includes('current')) || ''
+      : '';
+
+    // Build the LI class template
+    const liClassTpl = liBaseClass
+      ? (activeModifier
+          ? `class="${liBaseClass}{{ if .active }} ${activeModifier}{{ end }}"`
+          : `class="${liBaseClass}"`)
+      : `{{ if .active }}class="${activeModifier || 'active'}"{{ end }}`;
+
+    // Link class
+    const linkEl        = (normalLi || allLi[0]).querySelector('a');
+    const linkClass     = linkEl?.getAttribute('class') || '';
+    const linkClassAttr = linkClass ? ` class="${linkClass}"` : '';
+
+    // Build ancestor wrapper
+    const ancestors = getAncestorChain(list, body);
+    const wrapOpen  = ancestors.map(a => serializeOpenTag(a)).join('\n');
+    const wrapClose = ancestors.slice().reverse().map(a => serializeCloseTag(a)).join('\n');
+
+    const template = [
+      `{{ $breadcrumb := . }}`,
+      `{{ if $breadcrumb.items }}`,
+      wrapOpen,
+      `<${listTag}${listClassAttr}>`,
+      `  {{ range $breadcrumb.items }}`,
+      `  <li ${liClassTpl}>`,
+      `    {{ if .url }}<a href="{{ .url }}"${linkClassAttr}>{{ .text }}</a>{{ else }}{{ .text }}{{ end }}`,
+      `  </li>`,
+      `  {{ end }}`,
+      `</${listTag}>`,
+      wrapClose,
+      `{{ end }}`,
+    ].filter(Boolean).join('\n');
+
+    return `${header}\n${template}\n`;
+  } catch {
+    return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
+  }
 }
 
 /**
- * Build dynamic carousel partial
+ * Build dynamic carousel partial derived from actual source HTML structure.
+ * Uses the first slide as the slide template with image fields made dynamic.
+ * Text content structure is preserved from the source site's first slide.
  */
 function buildDynamicCarouselPartial(outerHtml, occurrenceCount) {
   const header = [
@@ -1191,83 +1374,97 @@ function buildDynamicCarouselPartial(outerHtml, occurrenceCount) {
     `  Structural partial: carousel (dynamic)`,
     `  Auto-generated by Hugo Converter.`,
     `  Occurrences found: ${occurrenceCount}`,
-    `  `,
+    `  Structure derived from source HTML — adapts to any site.`,
     `  Usage: {{ partial "structures/carousel.html" .Params.carousel }}`,
-    `  `,
+    `  Dynamic fields: .pcImage, .pcImageAlt, .mbImage, .mbImageAlt (images per slide)`,
+    `  Note: To make heading/link text dynamic, update the template manually.`,
     `  Expected front matter:`,
     `  carousel:`,
     `    items:`,
-    `      - title: "65 OR OLDER?"`,
-    `        description: "<p>You may be at greater risk...</p>"`,
-    `        linkText: "Learn More"`,
-    `        linkUrl: "pneumococcal-pneumonia"`,
-    `        pcImage: "/images/home_banner01_pc.jpg"`,
-    `        mbImage: "/images/home_banner01_mb.jpg"`,
+    `      - pcImage: "/images/slide1-pc.jpg"`,
+    `        pcImageAlt: "Slide one"`,
+    `        mbImage: "/images/slide1-mb.jpg"`,
+    `        mbImageAlt: "Slide one"`,
     `*/}}`,
   ].join('\n');
 
-  const template = `
-{{ $slides := .items }}
-{{ if $slides }}
-<div class="home-swiper-container">
-  <div class="swiper-button-prev">
-    <img src="/images/chev-left.svg" alt="prev"/>
-  </div>
-  <div class="swiper">
-    <div class="field field--name-field-banner field--type-entity-reference-revisions field--label-hidden swiper-wrapper field__items">
-      {{ range $slides }}
-      <div class="swiper-slide">
-        <div class="field__item">
-          <div class="paragraph paragraph--type--banner paragraph--view-mode--homepage">
-            <div class="banner-des">
-              <div class="des-container">
-                {{ if .title }}
-                <div class="clearfix text-formatted field field--name-field-title field--type-text field--label-hidden field__item">
-                  <div class="red-style">{{ .title }}</div>
-                </div>
-                {{ end }}
-                {{ if .description }}
-                <div class="clearfix text-formatted field field--name-field-description field--type-text-long field--label-hidden field__item">
-                  {{ .description | safeHTML }}
-                </div>
-                {{ end }}
-                {{ if .linkUrl }}
-                <div class="field field--name-field-link field--type-link field--label-hidden field__items">
-                  <div class="field__item"><a href="{{ .linkUrl }}">{{ .linkText }}</a></div>
-                </div>
-                {{ end }}
-              </div>
-            </div>
-            <div class="banner-imgs">
-              {{ if .pcImage }}
-              <div class="field field--name-field-pc-image field--type-entity-reference field--label-hidden field__item">
-                <img loading="eager" src="{{ .pcImage }}" alt="{{ .pcImageAlt }}" />
-              </div>
-              {{ end }}
-              {{ if .mbImage }}
-              <div class="field field--name-field-mb-image field--type-entity-reference field--label-hidden field__item">
-                <img loading="eager" src="{{ .mbImage }}" alt="{{ .mbImageAlt }}" />
-              </div>
-              {{ end }}
-            </div>
-          </div>
-        </div>
-      </div>
-      {{ end }}
-    </div>
-  </div>
-  <div class="swiper-button-next">
-    <img src="/images/chev-right.svg" alt="next"/>
-  </div>
-</div>
-{{ end }}
-`;
+  try {
+    const dom = new JSDOM(outerHtml);
+    const doc = dom.window.document;
+    const body = doc.body;
 
-  return header + '\n' + template;
+    // Find slides (exclude cloned slick slides)
+    const allSlides = Array.from(
+      body.querySelectorAll('.swiper-slide, .carousel-item, .slick-slide, [class*="-slide"]')
+    ).filter(s => !s.className.includes('cloned') && !s.className.includes('clone'));
+
+    if (allSlides.length === 0) {
+      return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
+    }
+
+    const firstSlide   = allSlides[0];
+    const slidesParent = firstSlide.parentElement;
+
+    // ── Build slide template from actual first slide HTML ──────────────────
+    // Escape original {{ }} FIRST so injected Hugo vars are not re-escaped
+    let slideTpl = escapeHugoDelimiters(firstSlide.outerHTML);
+
+    // Replace images: first img → pcImage, second → mbImage
+    let imgIdx = 0;
+    slideTpl = slideTpl.replace(/<img\b([^>]*)>/gi, (match, attrs) => {
+      imgIdx++;
+      if (imgIdx === 1) {
+        return `<img${attrs
+          .replace(/\bsrc=["'][^"']*["']/, 'src="{{ .pcImage }}"')
+          .replace(/\balt=["'][^"']*["']/, 'alt="{{ .pcImageAlt }}"')
+        }>`;
+      }
+      if (imgIdx === 2) {
+        return `<img${attrs
+          .replace(/\bsrc=["'][^"']*["']/, 'src="{{ .mbImage }}"')
+          .replace(/\balt=["'][^"']*["']/, 'alt="{{ .mbImageAlt }}"')
+        }>`;
+      }
+      return match;
+    });
+
+    // ── Build slides container and outer wrapper ───────────────────────────
+    const slidesParentClass = slidesParent?.getAttribute('class') || '';
+    const slidesParentTag   = slidesParent?.tagName.toLowerCase() || 'div';
+    const slidesParentAttr  = slidesParentClass ? ` class="${slidesParentClass}"` : '';
+    const slidesContainerOpen  = `<${slidesParentTag}${slidesParentAttr}>`;
+    const slidesContainerClose = `</${slidesParentTag}>`;
+
+    // Walk up to get outer ancestors of the slides container
+    const outerEl   = slidesParent?.parentElement;
+    const ancestors = (outerEl && outerEl !== body)
+      ? getAncestorChain(outerEl, body).concat([outerEl])
+      : [];
+    const wrapOpen  = ancestors.map(a => serializeOpenTag(a)).join('\n');
+    const wrapClose = ancestors.slice().reverse().map(a => serializeCloseTag(a)).join('\n');
+
+    const template = [
+      `{{ $slides := .items }}`,
+      `{{ if $slides }}`,
+      wrapOpen,
+      slidesContainerOpen,
+      `  {{ range $slides }}`,
+      `    ${slideTpl}`,
+      `  {{ end }}`,
+      slidesContainerClose,
+      wrapClose,
+      `{{ end }}`,
+    ].filter(Boolean).join('\n');
+
+    return `${header}\n${template}\n`;
+  } catch {
+    return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
+  }
 }
 
 /**
- * Build dynamic banner partial
+ * Build dynamic banner partial derived from actual source HTML structure.
+ * Preserves the source site's wrapper elements; makes image src/alt dynamic.
  */
 function buildDynamicBannerPartial(outerHtml, occurrenceCount) {
   const header = [
@@ -1275,51 +1472,49 @@ function buildDynamicBannerPartial(outerHtml, occurrenceCount) {
     `  Structural partial: banner (dynamic)`,
     `  Auto-generated by Hugo Converter.`,
     `  Occurrences found: ${occurrenceCount}`,
-    `  `,
+    `  Structure derived from source HTML — adapts to any site.`,
     `  Usage: {{ partial "structures/banner.html" .Params.banner }}`,
-    `  `,
+    `  Dynamic fields: .pcImage, .pcImageAlt (first img), .mbImage, .mbImageAlt (second img)`,
     `  Expected front matter:`,
     `  banner:`,
-    `    pcImage: "/images/covid19_today_hero_v2.jpg"`,
-    `    mbImage: "/images/covid19_today_hero_mob.jpg"`,
-    `    pcImageAlt: "Covid19 today"`,
-    `    mbImageAlt: "Covid19 today"`,
+    `    pcImage: "/images/banner-pc.jpg"`,
+    `    mbImage: "/images/banner-mb.jpg"`,
+    `    pcImageAlt: "Banner description"`,
+    `    mbImageAlt: "Banner description"`,
     `*/}}`,
   ].join('\n');
 
-  const template = `
-{{ if . }}
-<div class="banner-content covid-content">
-  <div class="field__item">
-    <div class="paragraph paragraph--type--covid-page-banner paragraph--view-mode--default">
-      <div class="field field--name-field-responsive-image field--type-entity-reference field--label-hidden field__item">
-        <article class="media media--type-responsive-image media--view-mode-default">
-          {{ if .pcImage }}
-          <div class="field field--name-field-media-image-1 field--type-image field--label-visually_hidden">
-            <div class="field__label visually-hidden">Image</div>
-            <div class="field__item">
-              <img loading="lazy" src="{{ .pcImage }}" alt="{{ .pcImageAlt }}" />
-            </div>
-          </div>
-          {{ end }}
-          {{ if .mbImage }}
-          <div class="field field--name-field-mobile-image field--type-image field--label-hidden field__item">
-            <img loading="lazy" src="{{ .mbImage }}" alt="{{ .mbImageAlt }}" />
-          </div>
-          {{ end }}
-        </article>
-      </div>
-    </div>
-  </div>
-</div>
-{{ end }}
-`;
+  try {
+    // Escape original {{ }} FIRST, then inject Hugo vars for images
+    let html = escapeHugoDelimiters(outerHtml);
 
-  return header + '\n' + template;
+    let imgIdx = 0;
+    html = html.replace(/<img\b([^>]*)>/gi, (match, attrs) => {
+      imgIdx++;
+      if (imgIdx === 1) {
+        return `<img${attrs
+          .replace(/\bsrc=["'][^"']*["']/, 'src="{{ .pcImage }}"')
+          .replace(/\balt=["'][^"']*["']/, 'alt="{{ .pcImageAlt }}"')
+        }>`;
+      }
+      if (imgIdx === 2) {
+        return `<img${attrs
+          .replace(/\bsrc=["'][^"']*["']/, 'src="{{ .mbImage }}"')
+          .replace(/\balt=["'][^"']*["']/, 'alt="{{ .mbImageAlt }}"')
+        }>`;
+      }
+      return match;
+    });
+
+    return `${header}\n{{ if . }}\n${html}\n{{ end }}\n`;
+  } catch {
+    return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
+  }
 }
 
 /**
- * Build dynamic menu partial
+ * Build dynamic menu partial derived from actual source HTML structure.
+ * Extracts real nav/UL/LI class names — no site-specific hard-coding.
  */
 function buildDynamicMenuPartial(outerHtml, occurrenceCount) {
   const header = [
@@ -1327,48 +1522,850 @@ function buildDynamicMenuPartial(outerHtml, occurrenceCount) {
     `  Structural partial: menu (dynamic)`,
     `  Auto-generated by Hugo Converter.`,
     `  Occurrences found: ${occurrenceCount}`,
-    `  `,
-    `  Usage: {{ partial "structures/menu.html" .Params.menu }}`,
-    `  `,
-    `  Note: Menu data should be in data/menu.yaml (site-wide data)`,
+    `  Structure derived from source HTML — adapts to any site.`,
+    `  Usage: {{ partial "structures/menu.html" .Params.navMenu }}`,
+    `  Note: navMenu avoids Hugo's reserved built-in 'menu' front matter key.`,
+    `  Expected front matter:`,
+    `  navMenu:`,
+    `    items:`,
+    `      - text: "Home"`,
+    `        url: "/"`,
+    `        submenu: []`,
+    `      - text: "About"`,
+    `        url: "/about"`,
+    `        submenu:`,
+    `          - text: "Team"`,
+    `            url: "/about/team"`,
     `*/}}`,
   ].join('\n');
 
-  const template = `
-{{ $menuItems := .items }}
-{{ if $menuItems }}
-<nav role="navigation" aria-labelledby="block-pfkpsg-main-menu-menu" id="block-pfkpsg-main-menu" class="block block-menu navigation menu--main">
-  <h2 class="visually-hidden" id="block-pfkpsg-main-menu-menu">Main navigation</h2>
-  <div class="close-button">
-    <img src="/images/header-close.png" alt="hamburger menu"/>
-  </div>
-  <div class="scroll-block">
-    <div class="links-box">
-      <a href="https://www.pfizerpro.com.sg/therapy-areas/covid-19/?cmp=kpsg-home" target="_blank" class="header-login-link">Login for Healthcare Professionals</a>
-      <a href="https://www.facebook.com/PfizerKnowpneumoniaSG/" target="_blank" class="header-icon-f"><img src="/images/header-icon-f.svg" alt="Header Logo" /></a>
-    </div>
-    <div class="nav-list-box">
-      <ul class="menu">
-        {{ range $menuItems }}
-        <li class="menu-item{{ if .submenu }} menu-item--expanded{{ end }}">
-          <a href="{{ .url }}">{{ .text }}</a>
-          {{ if .submenu }}
-          <ul class="menu">
-            {{ range .submenu }}
-            <li class="menu-item">
-              <a href="{{ .url }}">{{ .text }}</a>
-            </li>
-            {{ end }}
-          </ul>
-          {{ end }}
-        </li>
-        {{ end }}
-      </ul>
-    </div>
-  </div>
-</nav>
-{{ end }}
-`;
+  try {
+    const dom = new JSDOM(outerHtml);
+    const doc = dom.window.document;
+    const body = doc.body;
 
-  return header + '\n' + template;
+    // Find the top-level menu UL
+    const menuUl =
+      body.querySelector('ul.menu') ||
+      body.querySelector('[class*="menu-list"]') ||
+      body.querySelector('nav > ul') ||
+      body.querySelector('ul');
+
+    if (!menuUl) {
+      return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
+    }
+
+    const ulClass   = menuUl.getAttribute('class') || '';
+    const topLiList = Array.from(menuUl.querySelectorAll(':scope > li'));
+    if (topLiList.length === 0) {
+      return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
+    }
+
+    // Extract base LI class (strip state modifiers)
+    const firstLi      = topLiList[0];
+    const liBaseClass  = getBaseClasses(firstLi.getAttribute('class') || '');
+
+    // Find the expanded/has-children class from an item that has a submenu
+    const expandedLi    = topLiList.find(li => li.querySelector(':scope > ul'));
+    const expandedClass = expandedLi
+      ? (expandedLi.getAttribute('class') || '')
+          .split(' ')
+          .find(c => c.includes('expanded') || c.includes('has-children')) || ''
+      : '';
+
+    // Link class
+    const linkEl        = firstLi.querySelector(':scope > a');
+    const linkClass     = linkEl?.getAttribute('class') || '';
+    const linkClassAttr = linkClass ? ` class="${linkClass}"` : '';
+
+    // Submenu structure
+    const subMenuUl   = expandedLi?.querySelector(':scope > ul');
+    const subUlClass  = subMenuUl?.getAttribute('class') || ulClass;
+    const subFirstLi  = subMenuUl?.querySelector(':scope > li');
+    const subLiClass  = getBaseClasses(subFirstLi?.getAttribute('class') || liBaseClass);
+    const subLiClassAttr = subLiClass ? ` class="${subLiClass}"` : '';
+
+    // Build class attribute templates
+    const liClassTpl = liBaseClass
+      ? (expandedClass
+          ? ` class="${liBaseClass}{{ if .submenu }} ${expandedClass}{{ end }}"`
+          : ` class="${liBaseClass}"`)
+      : '';
+    const subUlOpen = subUlClass ? `<ul class="${subUlClass}">` : '<ul>';
+    const ulOpen    = ulClass    ? `<ul class="${ulClass}">`    : '<ul>';
+
+    // Build ancestor wrapper (everything outside the UL)
+    const ancestors = getAncestorChain(menuUl, body);
+    const wrapOpen  = ancestors.map(a => serializeOpenTag(a)).join('\n');
+    const wrapClose = ancestors.slice().reverse().map(a => serializeCloseTag(a)).join('\n');
+
+    const template = [
+      `{{ $menuItems := .items }}`,
+      `{{ if $menuItems }}`,
+      wrapOpen,
+      `  ${ulOpen}`,
+      `    {{ range $menuItems }}`,
+      `    <li${liClassTpl}>`,
+      `      <a href="{{ .url }}"${linkClassAttr}>{{ .text }}</a>`,
+      `      {{ if .submenu }}`,
+      `      ${subUlOpen}`,
+      `        {{ range .submenu }}`,
+      `        <li${subLiClassAttr}><a href="{{ .url }}">{{ .text }}</a></li>`,
+      `        {{ end }}`,
+      `      </ul>`,
+      `      {{ end }}`,
+      `    </li>`,
+      `    {{ end }}`,
+      `  </ul>`,
+      wrapClose,
+      `{{ end }}`,
+    ].filter(Boolean).join('\n');
+
+    return `${header}\n${template}\n`;
+  } catch {
+    return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  DYNAMIC DRUPAL COMPONENT DISCOVERY
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Dynamically scan all HTML files in a site directory and discover
+ * Drupal components: paragraph types, field types, block types, regions,
+ * and custom component patterns — regardless of which Drupal site it is.
+ *
+ * Returns: {
+ *   paragraphTypes : { [type]: { count, filesFound[], canonicalHtml } },
+ *   fieldTypes     : { [type]: { count, filesFound[], canonicalHtml } },
+ *   blockTypes     : { [type]: { count, filesFound[], canonicalHtml, blockId } },
+ *   regionTypes    : { [type]: { count, filesFound[], canonicalHtml } },
+ *   componentPatterns : { [type]: { count, filesFound[], canonicalHtml } },
+ * }
+ */
+function extractDrupalComponents(siteSrcDir) {
+  const paragraphTypes    = {};
+  const fieldTypes        = {};
+  const blockTypes        = {};
+  const regionTypes       = {};
+  const componentPatterns = {};
+
+  // Component patterns detected by wrapper CSS class conventions
+  // These are discovered dynamically — any site-specific wrapper classes
+  // are picked up by the paragraph/block/region regexes above.
+  // This list catches common non-Drupal-convention component wrappers.
+  const COMPONENT_WRAPPERS = [
+    { re: /class="[^"]*\b(stage-wrapper)\b[^"]*"/gi,           type: 'stage' },
+    { re: /class="[^"]*\b(title-text-wrapper)\b[^"]*"/gi,      type: 'title-text' },
+    { re: /class="[^"]*\b(image-text-wrapper)\b[^"]*"/gi,      type: 'image-text' },
+    { re: /class="[^"]*\b(teasers-wrapper)\b[^"]*"/gi,         type: 'teaser-section' },
+    { re: /class="[^"]*\b(teaser-cta-wrapper)\b[^"]*"/gi,      type: 'teaser-cta' },
+    { re: /class="[^"]*\b(fold-in-wrapper)\b[^"]*"/gi,         type: 'fold-in' },
+    { re: /class="[^"]*\b(three-blocks(?!-))\b[^"]*"/gi,       type: 'three-blocks' },
+    { re: /class="[^"]*\b(three-blocks-detailed)\b[^"]*"/gi,   type: 'three-blocks-detailed' },
+    { re: /class="[^"]*\b(white-banner)\b[^"]*"/gi,            type: 'white-banner' },
+    { re: /class="[^"]*\b(back-to-top)\b[^"]*"/gi,             type: 'back-to-top' },
+    { re: /class="[^"]*\b(refrences|references)\b[^"]*"/gi,    type: 'references' },
+  ];
+
+  function extractBlockFromPosition(html, matchIndex) {
+    // Walk backwards from match to find the opening tag
+    let tagStart = matchIndex;
+    while (tagStart > 0 && html[tagStart] !== '<') tagStart--;
+
+    const tagNameMatch = html.slice(tagStart).match(/^<([\w]+)\b/);
+    const tag = tagNameMatch ? tagNameMatch[1].toLowerCase() : 'div';
+
+    const openRe  = new RegExp(`<${tag}\\b`, 'gi');
+    const closeRe = new RegExp(`<\\/${tag}>`, 'gi');
+    let depth = 1;
+    const openTagEnd = html.indexOf('>', tagStart) + 1;
+    let cursor = openTagEnd;
+
+    while (depth > 0 && cursor < html.length) {
+      openRe.lastIndex  = cursor;
+      closeRe.lastIndex = cursor;
+      const nextOpen  = openRe.exec(html);
+      const nextClose = closeRe.exec(html);
+      if (!nextClose) break;
+      if (nextOpen && nextOpen.index < nextClose.index) {
+        depth++;
+        cursor = nextOpen.index + nextOpen[0].length;
+      } else {
+        depth--;
+        cursor = nextClose.index + nextClose[0].length;
+      }
+    }
+    return html.slice(tagStart, cursor);
+  }
+
+  function walk(dir, relBase) {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+    catch { return; }
+
+    for (const entry of entries) {
+      const absPath = path.join(dir, entry.name);
+      const relPath = relBase ? `${relBase}/${entry.name}` : entry.name;
+
+      if (entry.isDirectory()) {
+        if (!ASSET_FOLDERS.has(entry.name.toLowerCase())) walk(absPath, relPath);
+        continue;
+      }
+      if (!entry.name.endsWith('.html')) continue;
+
+      let html;
+      try { html = fs.readFileSync(absPath, 'utf8'); }
+      catch { continue; }
+
+      // ── Paragraph types ──
+      let m;
+      const paraRe = /class="[^"]*\bparagraph--type--([\w-]+)\b[^"]*"/gi;
+      while ((m = paraRe.exec(html)) !== null) {
+        const pType = m[1];
+        if (!paragraphTypes[pType]) {
+          paragraphTypes[pType] = {
+            count: 0,
+            filesFound: [],
+            canonicalHtml: extractBlockFromPosition(html, m.index),
+          };
+        }
+        paragraphTypes[pType].count++;
+        if (!paragraphTypes[pType].filesFound.includes(relPath)) {
+          paragraphTypes[pType].filesFound.push(relPath);
+        }
+      }
+
+      // ── Field types (unique field names per file) ──
+      const fieldRe = /class="[^"]*\bfield--name-(field-[\w-]+)\b[^"]*"/gi;
+      const seenFields = new Set();
+      while ((m = fieldRe.exec(html)) !== null) {
+        const fType = m[1];
+        if (seenFields.has(fType)) continue;
+        seenFields.add(fType);
+        if (!fieldTypes[fType]) {
+          fieldTypes[fType] = {
+            count: 0,
+            filesFound: [],
+            canonicalHtml: extractBlockFromPosition(html, m.index),
+          };
+        }
+        fieldTypes[fType].count++;
+        if (!fieldTypes[fType].filesFound.includes(relPath)) {
+          fieldTypes[fType].filesFound.push(relPath);
+        }
+      }
+
+      // ── Block types (Drupal block-block-content with unique IDs) ──
+      const blockRe = /id="(block-[\w-]+)"[^>]*class="[^"]*\bblock\b[^"]*block-block-content\b[^"]*"/gi;
+      while ((m = blockRe.exec(html)) !== null) {
+        const blockId = m[1];
+        const bType = blockId.replace(/^block-/, '');
+        if (!blockTypes[bType]) {
+          blockTypes[bType] = {
+            count: 0, filesFound: [],
+            canonicalHtml: extractBlockFromPosition(html, m.index),
+            blockId,
+          };
+        }
+        blockTypes[bType].count++;
+        if (!blockTypes[bType].filesFound.includes(relPath)) {
+          blockTypes[bType].filesFound.push(relPath);
+        }
+      }
+      // Also check reverse attribute order: class before id
+      const blockRe2 = /class="[^"]*\bblock\b[^"]*block-block-content\b[^"]*"[^>]*id="(block-[\w-]+)"/gi;
+      while ((m = blockRe2.exec(html)) !== null) {
+        const blockId = m[1];
+        const bType = blockId.replace(/^block-/, '');
+        if (blockTypes[bType] && blockTypes[bType].filesFound.includes(relPath)) continue;
+        if (!blockTypes[bType]) {
+          blockTypes[bType] = {
+            count: 0, filesFound: [],
+            canonicalHtml: extractBlockFromPosition(html, m.index),
+            blockId,
+          };
+        }
+        blockTypes[bType].count++;
+        if (!blockTypes[bType].filesFound.includes(relPath)) {
+          blockTypes[bType].filesFound.push(relPath);
+        }
+      }
+
+      // ── Region types ──
+      const regionRe = /class="[^"]*\bregion\s+region-([\w-]+)\b[^"]*"/gi;
+      while ((m = regionRe.exec(html)) !== null) {
+        const rType = m[1];
+        if (!regionTypes[rType]) {
+          regionTypes[rType] = {
+            count: 0, filesFound: [],
+            canonicalHtml: extractBlockFromPosition(html, m.index),
+          };
+        }
+        regionTypes[rType].count++;
+        if (!regionTypes[rType].filesFound.includes(relPath)) {
+          regionTypes[rType].filesFound.push(relPath);
+        }
+      }
+
+      // ── Component patterns ──
+      for (const { re, type } of COMPONENT_WRAPPERS) {
+        re.lastIndex = 0;
+        let cm;
+        while ((cm = re.exec(html)) !== null) {
+          if (!componentPatterns[type]) {
+            componentPatterns[type] = {
+              count: 0, filesFound: [],
+              canonicalHtml: extractBlockFromPosition(html, cm.index),
+            };
+          }
+          componentPatterns[type].count++;
+          if (!componentPatterns[type].filesFound.includes(relPath)) {
+            componentPatterns[type].filesFound.push(relPath);
+          }
+        }
+      }
+    }
+  }
+
+  walk(siteSrcDir, '');
+
+  return { paragraphTypes, fieldTypes, blockTypes, regionTypes, componentPatterns };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  DRUPAL COMPONENT PARTIAL WRITER
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Write Hugo partials for all dynamically discovered Drupal components.
+ * Creates partials only for components found across multiple pages (shared blocks/regions),
+ * or all paragraph/component types (always useful as partials).
+ *
+ * @param {object} components - Output from extractDrupalComponents()
+ * @param {string} layoutsDir - Path to Hugo layouts/ directory
+ * @param {string[]} logs - Accumulator for log messages
+ * @returns {{ paragraphs: object[], fields: object[], blocks: object[], regions: object[], components: object[] }}
+ */
+function writeDrupalComponentPartials(components, layoutsDir, logs) {
+  const result = { paragraphs: [], fields: [], blocks: [], regions: [], components: [] };
+
+  // ── Paragraph partials ────────────────────────────────────────
+  if (Object.keys(components.paragraphTypes).length > 0) {
+    const dir = path.join(layoutsDir, 'partials', 'paragraphs');
+    fs.mkdirSync(dir, { recursive: true });
+    logs.push(`\n  Paragraph types detected:`);
+
+    for (const [pType, info] of Object.entries(components.paragraphTypes)) {
+      const fileName = `paragraph--${pType}.html`;
+      const filePath = path.join(dir, fileName);
+      const partial = buildComponentPartial('paragraph', pType, info.canonicalHtml, info.count, info.filesFound);
+      fs.writeFileSync(filePath, partial, 'utf8');
+      logs.push(`    ✓ partials/paragraphs/${fileName}  (${info.count} occurrence(s) in ${info.filesFound.length} file(s))`);
+      result.paragraphs.push({ type: pType, fileName, count: info.count, filesFound: info.filesFound });
+    }
+  }
+
+  // ── Block partials (shared blocks appearing in 2+ files) ──────
+  if (Object.keys(components.blockTypes).length > 0) {
+    const dir = path.join(layoutsDir, 'partials', 'blocks');
+    fs.mkdirSync(dir, { recursive: true });
+    const sharedBlocks = Object.entries(components.blockTypes)
+      .filter(([, info]) => info.filesFound.length >= 2);
+
+    if (sharedBlocks.length > 0) {
+      logs.push(`\n  Shared block types detected:`);
+      for (const [bType, info] of sharedBlocks) {
+        const fileName = `block--${bType}.html`;
+        const filePath = path.join(dir, fileName);
+        const partial = buildComponentPartial('block', bType, info.canonicalHtml, info.count, info.filesFound);
+        fs.writeFileSync(filePath, partial, 'utf8');
+        logs.push(`    ✓ partials/blocks/${fileName}  (${info.count} occurrence(s) in ${info.filesFound.length} file(s))`);
+        result.blocks.push({ type: bType, fileName, count: info.count, filesFound: info.filesFound, blockId: info.blockId });
+      }
+    }
+  }
+
+  // ── Region partials (shared regions) ──────────────────────────
+  if (Object.keys(components.regionTypes).length > 0) {
+    const dir = path.join(layoutsDir, 'partials', 'regions');
+    fs.mkdirSync(dir, { recursive: true });
+    // Skip 'content' region — it wraps page-specific content that differs per page
+    const sharedRegions = Object.entries(components.regionTypes)
+      .filter(([rType, info]) => info.filesFound.length >= 2 && rType !== 'content');
+
+    if (sharedRegions.length > 0) {
+      logs.push(`\n  Shared region types detected:`);
+      for (const [rType, info] of sharedRegions) {
+        const fileName = `region--${rType}.html`;
+        const filePath = path.join(dir, fileName);
+        const partial = buildComponentPartial('region', rType, info.canonicalHtml, info.count, info.filesFound);
+        fs.writeFileSync(filePath, partial, 'utf8');
+        logs.push(`    ✓ partials/regions/${fileName}  (${info.count} occurrence(s) in ${info.filesFound.length} file(s))`);
+        result.regions.push({ type: rType, fileName, count: info.count, filesFound: info.filesFound });
+      }
+    }
+  }
+
+  // ── Component pattern partials ────────────────────────────────
+  if (Object.keys(components.componentPatterns).length > 0) {
+    const dir = path.join(layoutsDir, 'partials', 'components');
+    fs.mkdirSync(dir, { recursive: true });
+    logs.push(`\n  Component patterns detected:`);
+
+    for (const [cType, info] of Object.entries(components.componentPatterns)) {
+      const fileName = `${cType}.html`;
+      const filePath = path.join(dir, fileName);
+      const partial = buildComponentPartial('component', cType, info.canonicalHtml, info.count, info.filesFound);
+      fs.writeFileSync(filePath, partial, 'utf8');
+      logs.push(`    ✓ partials/components/${fileName}  (${info.count} occurrence(s) in ${info.filesFound.length} file(s))`);
+      result.components.push({ type: cType, fileName, count: info.count, filesFound: info.filesFound });
+    }
+  }
+
+  // ── Field summary (logged but not written as individual partials — too granular) ──
+  if (Object.keys(components.fieldTypes).length > 0) {
+    logs.push(`\n  Field types detected:`);
+    for (const [fType, info] of Object.entries(components.fieldTypes)) {
+      const fieldKind = fType.includes('image') ? 'image'
+        : fType.includes('text') ? 'text'
+        : fType.includes('link') ? 'link'
+        : fType.includes('banner') ? 'image'
+        : 'generic';
+      logs.push(`    ◦ ${fType} (${fieldKind}) — ${info.count} occurrence(s) in ${info.filesFound.length} file(s)`);
+      result.fields.push({ type: fType, fieldKind, count: info.count, filesFound: info.filesFound });
+    }
+  }
+
+  // ── Replace occurrences in layout files ──────────────────────
+  logs.push(`\n  Wiring partials into layout files…`);
+  replaceDrupalComponentsInLayouts(result, layoutsDir, logs);
+
+  return result;
+}
+
+/**
+ * Build a Hugo partial for a Drupal component (paragraph, block, region, or generic component).
+ * Preserves the full HTML structure, escapes Hugo delimiters, adds documentation header.
+ */
+function buildComponentPartial(category, type, outerHtml, count, filesFound) {
+  let html = outerHtml || '';
+
+  // Strip any previously injected Hugo partial refs
+  html = html.replace(/\{\{-?\s*partial\s+"[^"]*"\s+\.[^}]*?-?\}\}/gi, '');
+
+  // Escape Hugo delimiters
+  html = escapeHugoDelimiters(html);
+
+  const header = [
+    `{{/*`,
+    `  ${category}: ${type}`,
+    `  Auto-generated by Hugo Converter — structure preserved from source site.`,
+    `  Occurrences: ${count} in ${filesFound.length} file(s)`,
+    `  Files: ${filesFound.slice(0, 5).join(', ')}${filesFound.length > 5 ? ', …' : ''}`,
+    `  Customize this partial to use Hugo template variables as needed.`,
+    `*/}}`,
+  ].join('\n');
+
+  return `${header}\n${html}\n`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  DRUPAL COMPONENT REPLACER IN LAYOUTS
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Walk all .html files under layoutsDir and replace Drupal component HTML
+ * blocks with Hugo {{ partial "..." . }} calls.
+ *
+ * Handles:
+ *  - Blocks:     <div id="block-X" ...>  →  {{ partial "blocks/block--X.html" . }}
+ *  - Paragraphs: <div class="...paragraph--type--X...">  →  {{ partial "paragraphs/paragraph--X.html" . }}
+ *  - Regions:    <div class="...region region-X...">  →  {{ partial "regions/region--X.html" . }}
+ *  - Components: <div class="...wrapper-class...">  →  {{ partial "components/X.html" . }}
+ *
+ * @param {object} results - Output from writeDrupalComponentPartials (paragraphs, blocks, regions, components)
+ * @param {string} layoutsDir - Path to Hugo layouts/ directory
+ * @param {string[]} logs - Accumulator for log messages
+ */
+function replaceDrupalComponentsInLayouts(results, layoutsDir, logs) {
+  const partialsDir = path.resolve(layoutsDir, 'partials');
+
+  // Build replacement rules from the discovered components
+  const rules = [];
+
+  // Block rules: match by id="block-X"
+  for (const block of (results.blocks || [])) {
+    rules.push({
+      type: 'block',
+      id: block.blockId,          // e.g. "block-headerlogo"
+      partialRef: `{{ partial "blocks/${block.fileName}" . }}`,
+      label: block.fileName,
+    });
+  }
+
+  // Paragraph rules: match by paragraph--type--X class
+  for (const para of (results.paragraphs || [])) {
+    rules.push({
+      type: 'paragraph',
+      cssClass: `paragraph--type--${para.type}`,
+      partialRef: `{{ partial "paragraphs/${para.fileName}" . }}`,
+      label: para.fileName,
+    });
+  }
+
+  // Region rules: match by region region-X class (skip content — it's page-specific)
+  for (const region of (results.regions || [])) {
+    if (region.type === 'content') continue;
+    rules.push({
+      type: 'region',
+      cssClass: `region-${region.type}`,
+      partialRef: `{{ partial "regions/${region.fileName}" . }}`,
+      label: region.fileName,
+    });
+  }
+
+  // Component rules: match by known wrapper CSS class
+  const COMPONENT_CLASS_MAP = {
+    'stage':               'stage-wrapper',
+    'title-text':          'title-text-wrapper',
+    'image-text':          'image-text-wrapper',
+    'teaser-section':      'teasers-wrapper',
+    'teaser-cta':          'teaser-cta-wrapper',
+    'fold-in':             'fold-in-wrapper',
+    'three-blocks':        'three-blocks',
+    'three-blocks-detailed': 'three-blocks-detailed',
+    'white-banner':        'white-banner',
+    'back-to-top':         'back-to-top',
+    'references':          'refrences',   // note: Drupal typo preserved
+  };
+  for (const comp of (results.components || [])) {
+    const markerClass = COMPONENT_CLASS_MAP[comp.type] || comp.type;
+    rules.push({
+      type: 'component',
+      cssClass: markerClass,
+      partialRef: `{{ partial "components/${comp.fileName}" . }}`,
+      label: comp.fileName,
+    });
+  }
+
+  if (rules.length === 0) return;
+
+  // ── Walk all layout html files (skip partials dir) ──────────────
+  function walk(dir) {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+    catch { return; }
+
+    for (const entry of entries) {
+      const absPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        // Skip the partials directory itself (we don't want to modify the very files we just wrote)
+        if (path.resolve(absPath) === partialsDir) continue;
+        walk(absPath);
+        continue;
+      }
+      if (!entry.name.endsWith('.html')) continue;
+
+      let content;
+      try { content = fs.readFileSync(absPath, 'utf8'); }
+      catch { continue; }
+
+      let modified = content;
+      const replacements = [];
+
+      for (const rule of rules) {
+        if (rule.type === 'block' && rule.id) {
+          // Find the opening tag with this id, then extract the balanced block
+          const blockRe = new RegExp(`<(div|section|article|nav|aside|header|footer)\\b[^>]*\\bid="${rule.id}"[^>]*>`, 'gi');
+          let m;
+          while ((m = blockRe.exec(modified)) !== null) {
+            // Skip if already replaced
+            if (modified.slice(Math.max(0, m.index - 10), m.index).includes('{{')) continue;
+            const tag = m[1].toLowerCase();
+            const blockHtml = extractBalancedBlock(modified, m.index, tag);
+            if (blockHtml) {
+              replacements.push({ start: m.index, end: m.index + blockHtml.length, partialRef: rule.partialRef, label: rule.label });
+            }
+          }
+        } else if ((rule.type === 'paragraph' || rule.type === 'region' || rule.type === 'component') && rule.cssClass) {
+          // Find opening tags whose class attribute contains the marker class
+          const classRe = new RegExp(
+            `<(div|section|article|nav|aside)\\b[^>]*\\bclass="[^"]*(?:^|\\s)${escapeRegex(rule.cssClass)}(?:\\s|")[^>]*>`,
+            'gi'
+          );
+          let m2;
+          while ((m2 = classRe.exec(modified)) !== null) {
+            if (modified.slice(Math.max(0, m2.index - 10), m2.index).includes('{{')) continue;
+            const tag = m2[1].toLowerCase();
+            const blockHtml = extractBalancedBlock(modified, m2.index, tag);
+            if (blockHtml) {
+              replacements.push({ start: m2.index, end: m2.index + blockHtml.length, partialRef: rule.partialRef, label: rule.label });
+            }
+          }
+        }
+      }
+
+      if (replacements.length === 0) continue;
+
+      // Sort by start position descending so we can replace without index shifting
+      replacements.sort((a, b) => b.start - a.start);
+
+      // Deduplicate: keep only outermost replacements
+      const deduped = [];
+      for (const r of replacements) {
+        const isNested = deduped.some(outer => r.start >= outer.start && r.end <= outer.end);
+        if (isNested) continue;
+        // Evict any already-accepted items that are nested inside this one
+        for (let i = deduped.length - 1; i >= 0; i--) {
+          if (deduped[i].start >= r.start && deduped[i].end <= r.end) deduped.splice(i, 1);
+        }
+        deduped.push(r);
+      }
+      deduped.sort((a, b) => b.start - a.start);
+
+      for (const { start, end, partialRef } of deduped) {
+        modified = modified.slice(0, start) + partialRef + '\n' + modified.slice(end);
+      }
+
+      try {
+        fs.writeFileSync(absPath, modified, 'utf8');
+        const rel = path.relative(layoutsDir, absPath);
+        const labels = [...new Set(deduped.map(r => r.label))].join(', ');
+        logs.push(`    ↳ updated layouts/${rel}  (${deduped.length} component(s) → partials: ${labels})`);
+      } catch (e) {
+        logs.push(`    ✗ failed to update ${absPath}: ${e.message}`);
+      }
+    }
+  }
+
+  walk(layoutsDir);
+
+  // ── Second pass: wire block/component refs INSIDE region & paragraph partials ──────────────
+  // Region and paragraph partials were written with raw Drupal block HTML.
+  // Re-walk only those container partial dirs, applying block-only rules so
+  // region partials end up referencing block partials (but never region-in-region).
+  const blockAndComponentRules = rules.filter(r => r.type === 'block' || r.type === 'component');
+  if (blockAndComponentRules.length > 0) {
+    const containerDirs = ['regions', 'paragraphs']
+      .map(d => path.join(partialsDir, d))
+      .filter(d => { try { return fs.statSync(d).isDirectory(); } catch { return false; } });
+
+    for (const containerDir of containerDirs) {
+      let partialFiles;
+      try { partialFiles = fs.readdirSync(containerDir).filter(f => f.endsWith('.html')); }
+      catch { continue; }
+
+      for (const fname of partialFiles) {
+        const absPath = path.join(containerDir, fname);
+        let content;
+        try { content = fs.readFileSync(absPath, 'utf8'); }
+        catch { continue; }
+
+        let modified = content;
+        const replacements = [];
+
+        for (const rule of blockAndComponentRules) {
+          if (rule.type === 'block' && rule.id) {
+            const blockRe = new RegExp(
+              `<(div|section|article|nav|aside|header|footer)\\b[^>]*\\bid="${rule.id}"[^>]*>`,
+              'gi'
+            );
+            let m;
+            while ((m = blockRe.exec(modified)) !== null) {
+              if (modified.slice(Math.max(0, m.index - 10), m.index).includes('{{')) continue;
+              const tag = m[1].toLowerCase();
+              const blockHtml = extractBalancedBlock(modified, m.index, tag);
+              if (blockHtml) {
+                replacements.push({
+                  start: m.index,
+                  end: m.index + blockHtml.length,
+                  partialRef: rule.partialRef,
+                  label: rule.label,
+                });
+              }
+            }
+          } else if (rule.type === 'component' && rule.cssClass) {
+            const classRe = new RegExp(
+              `<(div|section|article|nav|aside)\\b[^>]*\\bclass="[^"]*(?:^|\\s)${escapeRegex(rule.cssClass)}(?:\\s|")[^>]*>`,
+              'gi'
+            );
+            let m2;
+            while ((m2 = classRe.exec(modified)) !== null) {
+              if (modified.slice(Math.max(0, m2.index - 10), m2.index).includes('{{')) continue;
+              const tag = m2[1].toLowerCase();
+              const blockHtml = extractBalancedBlock(modified, m2.index, tag);
+              if (blockHtml) {
+                replacements.push({
+                  start: m2.index,
+                  end: m2.index + blockHtml.length,
+                  partialRef: rule.partialRef,
+                  label: rule.label,
+                });
+              }
+            }
+          }
+        }
+
+        if (replacements.length === 0) continue;
+
+        replacements.sort((a, b) => b.start - a.start);
+        const deduped = [];
+        for (const r of replacements) {
+          const isNested = deduped.some(outer => r.start >= outer.start && r.end <= outer.end);
+          if (isNested) continue;
+          for (let i = deduped.length - 1; i >= 0; i--) {
+            if (deduped[i].start >= r.start && deduped[i].end <= r.end) deduped.splice(i, 1);
+          }
+          deduped.push(r);
+        }
+        deduped.sort((a, b) => b.start - a.start);
+
+        for (const { start, end, partialRef } of deduped) {
+          modified = modified.slice(0, start) + partialRef + '\n' + modified.slice(end);
+        }
+
+        try {
+          fs.writeFileSync(absPath, modified, 'utf8');
+          const rel = path.relative(partialsDir, absPath);
+          const labels = [...new Set(deduped.map(r => r.label))].join(', ');
+          logs.push(`    ↳ wired partials/${rel}  (${deduped.length} block(s): ${labels})`);
+        } catch (e) {
+          logs.push(`    ✗ failed to update ${absPath}: ${e.message}`);
+        }
+      }
+    }
+  }
+
+  // ── Third pass: wire ALL partial refs (regions + blocks) in static header.html & footer.html
+  // These are the static partials created in Step 5 from the Drupal header/footer HTML.
+  // Using ALL rules means region divs are replaced by region partial refs (outermost wins via
+  // deduplication), creating the proper chain: header.html → region--header.html → block--X.html
+  if (rules.length > 0) {
+    const staticPartials = ['header.html', 'footer.html']
+      .map(f => path.join(partialsDir, f))
+      .filter(f => { try { return fs.statSync(f).isFile(); } catch { return false; } });
+
+    for (const absPath of staticPartials) {
+      let content;
+      try { content = fs.readFileSync(absPath, 'utf8'); }
+      catch { continue; }
+
+      let modified = content;
+      const replacements = [];
+
+      for (const rule of rules) {
+        if (rule.type === 'block' && rule.id) {
+          const blockRe = new RegExp(
+            `<(div|section|article|nav|aside|header|footer)\\b[^>]*\\bid="${rule.id}"[^>]*>`,
+            'gi'
+          );
+          let m;
+          while ((m = blockRe.exec(modified)) !== null) {
+            if (modified.slice(Math.max(0, m.index - 10), m.index).includes('{{')) continue;
+            const tag = m[1].toLowerCase();
+            const blockHtml = extractBalancedBlock(modified, m.index, tag);
+            if (blockHtml) {
+              replacements.push({
+                start: m.index,
+                end: m.index + blockHtml.length,
+                partialRef: rule.partialRef,
+                label: rule.label,
+              });
+            }
+          }
+        } else if ((rule.type === 'region' || rule.type === 'paragraph' || rule.type === 'component') && rule.cssClass) {
+          const classRe = new RegExp(
+            `<(div|section|article|nav|aside)\\b[^>]*\\bclass="[^"]*(?:^|\\s)${escapeRegex(rule.cssClass)}(?:\\s|")[^>]*>`,
+            'gi'
+          );
+          let m2;
+          while ((m2 = classRe.exec(modified)) !== null) {
+            if (modified.slice(Math.max(0, m2.index - 10), m2.index).includes('{{')) continue;
+            const tag = m2[1].toLowerCase();
+            const blockHtml = extractBalancedBlock(modified, m2.index, tag);
+            if (blockHtml) {
+              replacements.push({
+                start: m2.index,
+                end: m2.index + blockHtml.length,
+                partialRef: rule.partialRef,
+                label: rule.label,
+              });
+            }
+          }
+        }
+      }
+
+      if (replacements.length === 0) continue;
+
+      // Sort descending and deduplicate — outermost element wins (region beats nested block)
+      replacements.sort((a, b) => b.start - a.start);
+      const deduped = [];
+      for (const r of replacements) {
+        const isNested = deduped.some(outer => r.start >= outer.start && r.end <= outer.end);
+        if (isNested) continue;
+        for (let i = deduped.length - 1; i >= 0; i--) {
+          if (deduped[i].start >= r.start && deduped[i].end <= r.end) deduped.splice(i, 1);
+        }
+        deduped.push(r);
+      }
+      deduped.sort((a, b) => b.start - a.start);
+
+      for (const { start, end, partialRef } of deduped) {
+        modified = modified.slice(0, start) + partialRef + '\n' + modified.slice(end);
+      }
+
+      try {
+        fs.writeFileSync(absPath, modified, 'utf8');
+        const rel = path.relative(partialsDir, absPath);
+        const labels = [...new Set(deduped.map(r => r.label))].join(', ');
+        logs.push(`    ↳ wired partials/${rel}  (${deduped.length} partial(s): ${labels})`);
+      } catch (e) {
+        logs.push(`    ✗ failed to update ${absPath}: ${e.message}`);
+      }
+    }
+  }
+}
+
+/** Escape a string for use as a literal pattern inside a RegExp */
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Extract the outer HTML of a balanced HTML block starting at startIndex.
+ * @param {string} html - Full HTML string
+ * @param {number} startIndex - Index of the opening '<' of the block
+ * @param {string} tag - Tag name (e.g. 'div')
+ * @returns {string|null} - Full outer HTML of the block, or null if not found
+ */
+function extractBalancedBlock(html, startIndex, tag) {
+  const openTagEnd = html.indexOf('>', startIndex);
+  if (openTagEnd === -1) return null;
+
+  // Handle self-closing tags
+  if (html[openTagEnd - 1] === '/') return html.slice(startIndex, openTagEnd + 1);
+
+  const openRe  = new RegExp(`<${tag}\\b`, 'gi');
+  const closeRe = new RegExp(`<\\/${tag}>`, 'gi');
+  let depth = 1;
+  let cursor = openTagEnd + 1;
+
+  while (depth > 0 && cursor < html.length) {
+    openRe.lastIndex  = cursor;
+    closeRe.lastIndex = cursor;
+    const nextOpen  = openRe.exec(html);
+    const nextClose = closeRe.exec(html);
+    if (!nextClose) return null;  // unbalanced / truncated HTML — abort cleanly
+    if (nextOpen && nextOpen.index < nextClose.index) {
+      depth++;
+      cursor = nextOpen.index + nextOpen[0].length;
+    } else {
+      depth--;
+      cursor = nextClose.index + nextClose[0].length;
+    }
+  }
+  if (depth !== 0) return null;
+  return html.slice(startIndex, cursor);
 }

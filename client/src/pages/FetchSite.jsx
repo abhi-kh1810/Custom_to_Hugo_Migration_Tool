@@ -27,6 +27,7 @@ import {
   Hash,
   Monitor,
   Square,
+  Layers,
 } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
@@ -460,6 +461,12 @@ export default function FetchSite() {
                               {convertResult.pageCount} page{convertResult.pageCount !== 1 ? 's' : ''}
                             </span>
                           )}
+                          {convertResult.totalPartials != null && (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/30 text-amber-300 text-xs font-medium">
+                              <Layers className="w-3 h-3" />
+                              {convertResult.totalPartials} partial{convertResult.totalPartials !== 1 ? 's' : ''}
+                            </span>
+                          )}
                         </div>
 
                         {/* Core metadata grid */}
@@ -548,6 +555,128 @@ export default function FetchSite() {
                                   </code>
                                 </div>
                               ))}
+                            </div>
+                          </details>
+                        )}
+
+                        {/* Dynamic partials summary */}
+                        {convertResult.partials && (
+                          <details className="group mb-3">
+                            <summary className="flex items-center gap-1.5 text-xs text-surface-300 cursor-pointer hover:text-white transition-colors select-none py-1">
+                              <Layers className="w-3.5 h-3.5 text-amber-400" />
+                              <span className="font-medium">Partials created ({convertResult.totalPartials || 0})</span>
+                              <ChevronDown className="w-3 h-3 ml-auto opacity-50 group-open:rotate-180 transition-transform" />
+                            </summary>
+                            <div className="mt-2 space-y-2">
+                              {/* Static partials */}
+                              <div>
+                                <p className="text-[10px] font-semibold text-surface-500 uppercase tracking-wider mb-1">Base Partials</p>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {convertResult.partials.static?.map((f) => (
+                                    <span key={f} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-500/20 border border-green-500/30 text-green-300 text-[11px] font-medium">
+                                      <CheckCircle2 className="w-3 h-3" />{f}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+
+                              {/* Node type partials */}
+                              {convertResult.partials.nodes?.length > 0 && (
+                                <div>
+                                  <p className="text-[10px] font-semibold text-surface-500 uppercase tracking-wider mb-1">Node Types</p>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {convertResult.partials.nodes.map((n) => (
+                                      <span key={n.nodeType} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-500/20 border border-violet-500/30 text-violet-300 text-[11px] font-medium">
+                                        {n.partialFileName} <span className="text-violet-400/60">({n.filesFound?.length} file{n.filesFound?.length !== 1 ? 's' : ''})</span>
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Paragraph type partials */}
+                              {convertResult.partials.paragraphs?.length > 0 && (
+                                <div>
+                                  <p className="text-[10px] font-semibold text-surface-500 uppercase tracking-wider mb-1">Paragraph Types</p>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {convertResult.partials.paragraphs.map((p) => (
+                                      <span key={p.type} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/20 border border-blue-500/30 text-blue-300 text-[11px] font-medium">
+                                        {p.fileName} <span className="text-blue-400/60">({p.count}×)</span>
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Block partials */}
+                              {convertResult.partials.blocks?.length > 0 && (
+                                <div>
+                                  <p className="text-[10px] font-semibold text-surface-500 uppercase tracking-wider mb-1">Shared Blocks</p>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {convertResult.partials.blocks.map((b) => (
+                                      <span key={b.type} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-orange-500/20 border border-orange-500/30 text-orange-300 text-[11px] font-medium">
+                                        {b.fileName} <span className="text-orange-400/60">({b.filesFound?.length} file{b.filesFound?.length !== 1 ? 's' : ''})</span>
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Region partials */}
+                              {convertResult.partials.regions?.length > 0 && (
+                                <div>
+                                  <p className="text-[10px] font-semibold text-surface-500 uppercase tracking-wider mb-1">Shared Regions</p>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {convertResult.partials.regions.map((r) => (
+                                      <span key={r.type} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-teal-500/20 border border-teal-500/30 text-teal-300 text-[11px] font-medium">
+                                        {r.fileName} <span className="text-teal-400/60">({r.filesFound?.length} file{r.filesFound?.length !== 1 ? 's' : ''})</span>
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Component pattern partials */}
+                              {convertResult.partials.components?.length > 0 && (
+                                <div>
+                                  <p className="text-[10px] font-semibold text-surface-500 uppercase tracking-wider mb-1">Component Patterns</p>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {convertResult.partials.components.map((c) => (
+                                      <span key={c.type} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-pink-500/20 border border-pink-500/30 text-pink-300 text-[11px] font-medium">
+                                        {c.fileName} <span className="text-pink-400/60">({c.count}×)</span>
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Structural partials */}
+                              {convertResult.partials.structural?.length > 0 && (
+                                <div>
+                                  <p className="text-[10px] font-semibold text-surface-500 uppercase tracking-wider mb-1">Structural Patterns</p>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {convertResult.partials.structural.map((s) => (
+                                      <span key={s.type} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-cyan-500/20 border border-cyan-500/30 text-cyan-300 text-[11px] font-medium">
+                                        {s.partialFileName} <span className="text-cyan-400/60">({s.occurrences}×)</span>
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Field types (informational) */}
+                              {convertResult.partials.fields?.length > 0 && (
+                                <div>
+                                  <p className="text-[10px] font-semibold text-surface-500 uppercase tracking-wider mb-1">Field Types Detected</p>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {convertResult.partials.fields.map((f) => (
+                                      <span key={f.type} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-700 border border-surface-600 text-surface-300 text-[11px]">
+                                        {f.type} <span className="text-surface-500">({f.fieldKind}, {f.count}×)</span>
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           </details>
                         )}

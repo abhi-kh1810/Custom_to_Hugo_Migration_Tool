@@ -7,15 +7,8 @@ import {
   analyzeHtmlFiles,
   writeNodePartials,
   writeStructuralPartials,
-  identifySemanticTags,
-  extractNodeTypeBlocks,
-  normalizeHtml,
-  replaceNodeBlocksInLayouts,
-  extractTabMenuItems,
-  extractCarouselItems,
-  extractBannerData,
-  extractMenuData,
-  extractBreadcrumbData,
+  extractDrupalComponents,
+  writeDrupalComponentPartials,
 } from '../utils/analyzeHtml.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -241,57 +234,123 @@ function extractPageHeadJS(html) {
  *   6. Drupal-style region-content div
  *   7. Full <body> minus <header>, <nav>, <footer>, inline <script>
  */
-function smartExtractMainContent(html) {
-  // Strategy 1: semantic <main> tag
-  const mainTagMatch = html.match(/<main[^>]*>([\s\S]*?)<\/main>/i);
-  if (mainTagMatch) return mainTagMatch[1].trim();
+/**
+ * Extract a balanced outer HTML block for a tag starting at startIndex.
+ * Returns the full outer HTML (opening tag + content + closing tag), or null
+ * if no balanced closing tag is found (malformed/truncated HTML).
+ */
+function extractBalancedOuter(html, startIndex, tag) {
+  const openTagEnd = html.indexOf('>', startIndex);
+  if (openTagEnd === -1) return null;
+  if (html[openTagEnd - 1] === '/') return html.slice(startIndex, openTagEnd + 1); // self-closing
 
-  // Strategy 2: role="main"
-  const roleMains = ['div', 'section', 'article'];
-  for (const tag of roleMains) {
-    const re = new RegExp(`<${tag}[^>]+role=["']main["'][^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
-    const m = html.match(re);
-    if (m) return m[1].trim();
+  const openRe  = new RegExp(`<${tag}\\b`, 'gi');
+  const closeRe = new RegExp(`<\\/${tag}>`, 'gi');
+  let depth = 1;
+  let cursor = openTagEnd + 1;
+
+  while (depth > 0 && cursor < html.length) {
+    openRe.lastIndex  = cursor;
+    closeRe.lastIndex = cursor;
+    const nextOpen  = openRe.exec(html);
+    const nextClose = closeRe.exec(html);
+    if (!nextClose) return null;  // unbalanced — abort, do not return truncated content
+    if (nextOpen && nextOpen.index < nextClose.index) {
+      depth++;
+      cursor = nextOpen.index + nextOpen[0].length;
+    } else {
+      depth--;
+      cursor = nextClose.index + nextClose[0].length;
+    }
+  }
+  if (depth !== 0) return null;
+  return html.slice(startIndex, cursor);
+}
+
+/**
+ * Like extractBalancedOuter but returns only the INNER content.
+ */
+function extractBalancedInner(html, startIndex, tag) {
+  const outer = extractBalancedOuter(html, startIndex, tag);
+  if (!outer) return null;
+  const innerStart = outer.indexOf('>') + 1;
+  const innerEnd   = outer.lastIndexOf(`</${tag}>`);
+  return outer.slice(innerStart, innerEnd).trim();
+}
+
+function smartExtractMainContent(html) {
+  // Strategy 1: semantic <main> tag — use balanced extraction to handle nested <main> elements
+  const mainIdx = html.search(/<main\b/i);
+  if (mainIdx !== -1) {
+    const inner = extractBalancedInner(html, mainIdx, 'main');
+    if (inner) return inner;
   }
 
-  // Strategy 3: common ID selectors
+  // Strategy 2: role="main" — use balanced extraction
+  const roleMains = ['div', 'section', 'article'];
+  for (const tag of roleMains) {
+    const re = new RegExp(`<${tag}\\b[^>]+role=["']main["'][^>]*>`, 'i');
+    const m  = re.exec(html);
+    if (m) {
+      const inner = extractBalancedInner(html, m.index, tag);
+      if (inner) return inner;
+    }
+  }
+
+  // Strategy 3: common ID selectors — use balanced extraction
   const commonIds = ['main-content', 'main', 'content', 'page-content', 'site-content', 'primary', 'wrapper', 'container'];
   for (const id of commonIds) {
     for (const tag of ['div', 'section', 'article']) {
-      const re = new RegExp(`<${tag}[^>]+id=["']${id}["'][^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
-      const m = html.match(re);
-      if (m) return m[1].trim();
+      const re = new RegExp(`<${tag}\\b[^>]+id=["']${id}["'][^>]*>`, 'i');
+      const m  = re.exec(html);
+      if (m) {
+        const inner = extractBalancedInner(html, m.index, tag);
+        if (inner) return inner;
+      }
     }
   }
 
-  // Strategy 4: common class selectors
+  // Strategy 4: common class selectors — use balanced extraction
   const commonClasses = ['main-content', 'page-content', 'content-area', 'site-content', 'entry-content', 'post-content', 'article-content', 'region-content'];
   for (const cls of commonClasses) {
     for (const tag of ['div', 'section', 'article']) {
-      const re = new RegExp(`<${tag}[^>]+class=["'][^"']*\\b${cls}\\b[^"']*["'][^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
-      const m = html.match(re);
-      if (m) return m[1].trim();
+      const re = new RegExp(`<${tag}\\b[^>]+class=["'][^"']*\\b${cls}\\b[^"']*["'][^>]*>`, 'i');
+      const m  = re.exec(html);
+      if (m) {
+        const inner = extractBalancedInner(html, m.index, tag);
+        if (inner) return inner;
+      }
     }
   }
 
-  // Strategy 5: <article> tag
-  const articleMatch = html.match(/<article[^>]*>([\s\S]*?)<\/article>/i);
-  if (articleMatch) return articleMatch[1].trim();
+  // Strategy 5: <article> tag — balanced extraction
+  const articleIdx = html.search(/<article\b/i);
+  if (articleIdx !== -1) {
+    const inner = extractBalancedInner(html, articleIdx, 'article');
+    if (inner) return inner;
+  }
 
-  // Strategy 6: Drupal / CMS region-content fallback
-  const rcMatch = html.match(/<div[^>]+class="[^"]*\bregion-content\b[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/i);
-  if (rcMatch) return rcMatch[1].trim();
+  // Strategy 6: Drupal / CMS region-content fallback — balanced extraction
+  const rcRe = /<div\b[^>]+class="[^"]*\bregion-content\b[^"]*"[^>]*>/i;
+  const rcM  = rcRe.exec(html);
+  if (rcM) {
+    const inner = extractBalancedInner(html, rcM.index, 'div');
+    if (inner) return inner;
+  }
 
   // Strategy 7: body minus shared chrome
-  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-  if (bodyMatch) {
-    let body = bodyMatch[1];
-    body = body.replace(/<header[\s>][\s\S]*?<\/header>/gi, '');
-    body = body.replace(/<nav[\s\S]*?<\/nav>/gi, '');
-    body = body.replace(/<footer[\s>][\s\S]*?<\/footer>/gi, '');
-    body = body.replace(/<script[\s\S]*?<\/script>/gi, '');
-    body = body.replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
-    return body.trim();
+  const bodyIdx = html.search(/<body\b/i);
+  if (bodyIdx !== -1) {
+    const bodyContent = extractBalancedInner(html, bodyIdx, 'body');
+    if (bodyContent) {
+      let body = bodyContent;
+      body = body.replace(/<header[\s\S]*?<\/header>/gi, '');
+      body = body.replace(/<nav[\s\S]*?<\/nav>/gi, '');
+      body = body.replace(/<footer[\s\S]*?<\/footer>/gi, '');
+      body = body.replace(/<script[\s\S]*?<\/script>/gi, '');
+      body = body.replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
+      return body.trim();
+    }
   }
 
   return '{{ .Content }}';
@@ -504,95 +563,72 @@ function slugToTypeName(slug) {
  * This gives every page its own isolated layout file, matching
  * the reference site pattern exactly.
  */
-function buildContentFrontMatter({ slug, title, description, abstract, bodyClass, bodyId, pageCSS, pageJS, tabMenu, carousel, banner, breadcrumb, menu}) {
+function buildContentFrontMatter({ slug, title, description, abstract, bodyClass, bodyId, pageCSS, pageJS, tabMenu, carousel, banner, breadcrumb }) {
   const typeSlug   = slugToTypeName(slug);
   const layoutName = slug.split('/').pop();
-  const safeTitle  = (title || slug).replace(/'/g, "\\'");
-  const safeDesc   = (description || '').replace(/'/g, "\\'");
-  const safeAbs    = (abstract || '').replace(/'/g, "\\'");
+  // YAML single-quoted scalars: only ' needs escaping, as '' (doubled).
+  const yml = (s) => (s || '').replace(/'/g, "''");
 
   let fm = `---\n`;
-  fm += `title: '${safeTitle}'\n`;
+  fm += `title: '${yml(title || slug)}'\n`;
   fm += `draft: false\n`;
-  if (safeDesc)  fm += `description: '${safeDesc}'\n`;
-  if (safeAbs)   fm += `abstract: '${safeAbs}'\n`;
+  if (description) fm += `description: '${yml(description)}'\n`;
+  if (abstract)    fm += `abstract: '${yml(abstract)}'\n`;
   fm += `type: '${typeSlug}'\n`;
   fm += `layout: '${layoutName}'\n`;
-  if (bodyClass) fm += `bodyClass: '${bodyClass.replace(/'/g, "\\'")}' \n`;
-  if (bodyId)    fm += `bodyId: '${bodyId.replace(/'/g, "\\'")}' \n`;
+  if (bodyClass) fm += `bodyClass: '${yml(bodyClass)}'\n`;
+  if (bodyId)    fm += `bodyId: '${yml(bodyId)}'\n`;
   if (pageCSS && pageCSS.length) {
     fm += `pageCSS:\n`;
-    for (const css of pageCSS) fm += `  - '${css.replace(/'/g, "\\'")}' \n`;
+    for (const css of pageCSS) fm += `  - '${yml(css)}'\n`;
   }
   if (pageJS && pageJS.length) {
     fm += `pageJS:\n`;
-    for (const js of pageJS) fm += `  - '${js.replace(/'/g, "\\'")}' \n`;
+    for (const js of pageJS) fm += `  - '${yml(js)}'\n`;
   }
-  
-  // ADD TAB MENU DATA
+
+  // TAB MENU DATA
   if (tabMenu && tabMenu.items && tabMenu.items.length > 0) {
     fm += `tabMenu:\n  items:\n`;
     for (const item of tabMenu.items) {
-      const safeText = (item.text || '').replace(/'/g, "\\'");
-      const safeUrl = (item.url || '').replace(/'/g, "\\'");
-      fm += `    - text: '${safeText}'\n      url: '${safeUrl}'\n`;
+      fm += `    - text: '${yml(item.text)}'\n      url: '${yml(item.url)}'\n`;
     }
   }
-  
-  // ADD CAROUSEL DATA
+
+  // CAROUSEL DATA
   if (carousel && carousel.items && carousel.items.length > 0) {
     fm += `carousel:\n  items:\n`;
     for (const item of carousel.items) {
-      fm += `    - title: '${(item.title || '').replace(/'/g, "\\'")}'\n`;
-      fm += `      description: '${(item.description || '').replace(/'/g, "\\'")}'\n`;
-      fm += `      linkText: '${(item.linkText || '').replace(/'/g, "\\'")}'\n`;
-      fm += `      linkUrl: '${(item.linkUrl || '').replace(/'/g, "\\'")}'\n`;
-      fm += `      pcImage: '${(item.pcImage || '').replace(/'/g, "\\'")}'\n`;
-      fm += `      mbImage: '${(item.mbImage || '').replace(/'/g, "\\'")}'\n`;
-      fm += `      pcImageAlt: '${(item.pcImageAlt || '').replace(/'/g, "\\'")}'\n`;
-      fm += `      mbImageAlt: '${(item.mbImageAlt || '').replace(/'/g, "\\'")}'\n`;
+      fm += `    - title: '${yml(item.title)}'\n`;
+      fm += `      description: '${yml(item.description)}'\n`;
+      fm += `      linkText: '${yml(item.linkText)}'\n`;
+      fm += `      linkUrl: '${yml(item.linkUrl)}'\n`;
+      fm += `      pcImage: '${yml(item.pcImage)}'\n`;
+      fm += `      mbImage: '${yml(item.mbImage)}'\n`;
+      fm += `      pcImageAlt: '${yml(item.pcImageAlt)}'\n`;
+      fm += `      mbImageAlt: '${yml(item.mbImageAlt)}'\n`;
     }
   }
-  
-  // ADD BANNER DATA
+
+  // BANNER DATA
   if (banner && (banner.pcImage || banner.mbImage)) {
     fm += `banner:\n`;
-    if (banner.pcImage) fm += `  pcImage: '${banner.pcImage.replace(/'/g, "\\'")}'\n`;
-    if (banner.mbImage) fm += `  mbImage: '${banner.mbImage.replace(/'/g, "\\'")}'\n`;
-    if (banner.pcImageAlt) fm += `  pcImageAlt: '${banner.pcImageAlt.replace(/'/g, "\\'")}'\n`;
-    if (banner.mbImageAlt) fm += `  mbImageAlt: '${banner.mbImageAlt.replace(/'/g, "\\'")}'\n`;
+    if (banner.pcImage)    fm += `  pcImage: '${yml(banner.pcImage)}'\n`;
+    if (banner.mbImage)    fm += `  mbImage: '${yml(banner.mbImage)}'\n`;
+    if (banner.pcImageAlt) fm += `  pcImageAlt: '${yml(banner.pcImageAlt)}'\n`;
+    if (banner.mbImageAlt) fm += `  mbImageAlt: '${yml(banner.mbImageAlt)}'\n`;
   }
 
+  // BREADCRUMB DATA
   if (breadcrumb && breadcrumb.items && breadcrumb.items.length > 0) {
     fm += `breadcrumb:\n  items:\n`;
     for (const item of breadcrumb.items) {
-      fm += `    - text: '${(item.text || '').replace(/'/g, "\\'")}'\n`;
-      fm += `      url: '${(item.url || '').replace(/'/g, "\\'")}'\n`;
-      if (item.active) {
-        fm += `      active: true\n`;
-      }
+      fm += `    - text: '${yml(item.text)}'\n`;
+      fm += `      url: '${yml(item.url)}'\n`;
+      if (item.active) fm += `      active: true\n`;
     }
   }
 
-   // ADD MENU DATA
-  if (menu && menu.items && menu.items.length > 0) {
-    fm += `menu:\n  items:\n`;
-    for (const item of menu.items) {
-      const safeText = (item.text || '').replace(/'/g, "\\'");
-      const safeUrl = (item.url || '').replace(/'/g, "\\'");
-      fm += `    - text: '${safeText}'\n`;
-      fm += `      url: '${safeUrl}'\n`;
-      if (item.submenu && item.submenu.length > 0) {
-        fm += `      submenu:\n`;
-        for (const subItem of item.submenu) {
-          const safeSubText = (subItem.text || '').replace(/'/g, "\\'");
-          const safeSubUrl = (subItem.url || '').replace(/'/g, "\\'");
-          fm += `        - text: '${safeSubText}'\n`;
-          fm += `          url: '${safeSubUrl}'\n`;
-        }
-      }
-    }
-  }
   fm += `---\n`;
   return fm;
 }
@@ -619,13 +655,15 @@ function buildPageLayout(mainContent) {
  */
 function buildHugoToml({ canonicalUrl, lang, title, description, keywords, abstract, siteName }) {
   const siteTitle = title || siteName;
-  let toml = `baseURL = '${canonicalUrl}/'\n`;
-  toml += `languageCode = '${lang}'\n`;
-  toml += `title = '${siteTitle.replace(/'/g, "\\'")}'\n`;
+  // TOML basic strings (double-quoted): escape backslash and double-quote only.
+  const tomlEsc = (s) => (s || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  let toml = `baseURL = "${canonicalUrl}/"\n`;
+  toml += `languageCode = "${lang}"\n`;
+  toml += `title = "${tomlEsc(siteTitle)}"\n`;
   toml += `\n[params]\n`;
-  if (description) toml += `  description = '${description.replace(/'/g, "\\'")}'\n`;
-  if (keywords)    toml += `  keywords    = '${keywords.replace(/'/g, "\\'")}'\n`;
-  if (abstract)    toml += `  abstract    = '${abstract.replace(/'/g, "\\'")}'\n`;
+  if (description) toml += `  description = "${tomlEsc(description)}"\n`;
+  if (keywords)    toml += `  keywords    = "${tomlEsc(keywords)}"\n`;
+  if (abstract)    toml += `  abstract    = "${tomlEsc(abstract)}"\n`;
   return toml;
 }
 
@@ -861,6 +899,36 @@ router.post('/convert', (req, res) => {
       }
     }
 
+    // ── Step 3c: Copy flat (non-index) HTML files verbatim to static/ ──
+    // Files like 404.html, errors/404.html etc. end up in public/ unchanged.
+    // Only skip true system folders (.git, node_modules, __macosx).
+    // Asset folders (css, js, images…) AND the errors/ folder are scanned
+    // because they may contain flat HTML pages (e.g. errors/404.html).
+    const SKIP_IN_FLAT_SCAN = new Set(['.git', 'node_modules', '__macosx', 'thumbs', 'unprocessed']);
+    const flatHtmlCopied = [];
+    (function copyFlatHtmlToStatic(dir, relBase) {
+      let entries;
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        const absPath = path.join(dir, entry.name);
+        const relPath = relBase ? `${relBase}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          if (!SKIP_IN_FLAT_SCAN.has(entry.name.toLowerCase()))
+            copyFlatHtmlToStatic(absPath, relPath);
+          continue;
+        }
+        // Only flat .html files — skip index.html (those become Hugo pages)
+        if (!entry.name.endsWith('.html') || entry.name === 'index.html') continue;
+        const destPath = path.join(staticDir, relPath);
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        try { fs.copyFileSync(absPath, destPath); flatHtmlCopied.push(relPath); } catch { /* ignore */ }
+      }
+    })(siteSrcDir, '');
+    if (flatHtmlCopied.length) {
+      logs.push(`  ✓ ${flatHtmlCopied.length} flat HTML file(s) copied verbatim to static/ → public/`);
+      for (const f of flatHtmlCopied) logs.push(`    - ${f}`);
+    }
+
     // ── Step 4: Discover all pages ────────────────────────────────
     logs.push(`\nDiscovering pages in sites/${domain}/…`);
     const pages = discoverPages(siteSrcDir);
@@ -896,13 +964,6 @@ router.post('/convert', (req, res) => {
     fs.writeFileSync(path.join(partialsDir, 'footer.html'), rawFooter + '\n', 'utf8');
     logs.push(`  ✓ layouts/partials/footer.html`);
 
-    // nav.html — if a standalone <nav> exists in the body (outside header/footer)
-    const bodyNavMatch = srcHtml.match(/<nav[^>]*>([\s\S]*?)<\/nav>/i);
-    if (bodyNavMatch) {
-      fs.writeFileSync(path.join(partialsDir, 'nav.html'), `<nav${bodyNavMatch[0].slice(4)}\n`, 'utf8');
-      logs.push(`  ✓ layouts/partials/nav.html`);
-    }
-
     // ── Step 6: _default layouts ──────────────────────────────────
     logs.push(`\nBuilding _default layouts…`);
 
@@ -927,77 +988,22 @@ router.post('/convert', (req, res) => {
     const { bodyClass: homeBodyClass, bodyId: homeBodyId } = extractBodyAttributes(srcHtml);
     const homePageCSS = extractPageCSS(srcHtml);
     const homePageJS  = extractPageHeadJS(srcHtml);
-    const homeCarousel = extractCarouselItems(srcHtml);
-    const homeBanner = extractBannerData(srcHtml);
-    const homeTabMenu = extractTabMenuItems(srcHtml);
-    const homeBreadcrumb = extractBreadcrumbData(srcHtml);
-    const homeMenu = extractMenuData(srcHtml);  // ADD THIS
-    const homePageTitle = (meta.pageTitle || meta.title || domain).replace(/'/g, "\\'");
-    let homeFm = `---\ntitle: '${homePageTitle}'\ndraft: false\n`;
-    if (meta.description)  homeFm += `description: '${meta.description.replace(/'/g, "\\'")}'\n`;
-    if (homeBodyClass)     homeFm += `bodyClass: '${homeBodyClass.replace(/'/g, "\\'")}' \n`;
-    if (homeBodyId)        homeFm += `bodyId: '${homeBodyId.replace(/'/g, "\\'")}' \n`;
+    const homePageTitle = (meta.pageTitle || meta.title || domain);
+    // YAML single-quoted scalars: escape ' as ''
+    const yml = (s) => (s || '').replace(/'/g, "''");
+    let homeFm = `---\ntitle: '${yml(homePageTitle)}'\ndraft: false\n`;
+    if (meta.description)  homeFm += `description: '${yml(meta.description)}'\n`;
+    if (homeBodyClass)     homeFm += `bodyClass: '${yml(homeBodyClass)}'\n`;
+    if (homeBodyId)        homeFm += `bodyId: '${yml(homeBodyId)}'\n`;
     if (homePageCSS.length) {
       homeFm += `pageCSS:\n`;
-      for (const css of homePageCSS) homeFm += `  - '${css.replace(/'/g, "\\'")}' \n`;
+      for (const css of homePageCSS) homeFm += `  - '${yml(css)}'\n`;
     }
     if (homePageJS.length) {
       homeFm += `pageJS:\n`;
-      for (const js of homePageJS) homeFm += `  - '${js.replace(/'/g, "\\'")}' \n`;
+      for (const js of homePageJS) homeFm += `  - '${yml(js)}'\n`;
     }
-    
-    // ADD CAROUSEL DATA
-    if (homeCarousel && homeCarousel.items && homeCarousel.items.length > 0) {
-      homeFm += `carousel:\n  items:\n`;
-      for (const item of homeCarousel.items) {
-        homeFm += `    - title: '${(item.title || '').replace(/'/g, "\\'")}'\n`;
-        homeFm += `      description: '${(item.description || '').replace(/'/g, "\\'")}'\n`;
-        homeFm += `      linkText: '${(item.linkText || '').replace(/'/g, "\\'")}'\n`;
-        homeFm += `      linkUrl: '${(item.linkUrl || '').replace(/'/g, "\\'")}'\n`;
-        homeFm += `      pcImage: '${(item.pcImage || '').replace(/'/g, "\\'")}'\n`;
-        homeFm += `      mbImage: '${(item.mbImage || '').replace(/'/g, "\\'")}'\n`;
-        homeFm += `      pcImageAlt: '${(item.pcImageAlt || '').replace(/'/g, "\\'")}'\n`;
-        homeFm += `      mbImageAlt: '${(item.mbImageAlt || '').replace(/'/g, "\\'")}'\n`;
-      }
-    }
-    
-    // ADD BANNER DATA
-    if (homeBanner && (homeBanner.pcImage || homeBanner.mbImage)) {
-      homeFm += `banner:\n`;
-      if (homeBanner.pcImage) homeFm += `  pcImage: '${homeBanner.pcImage.replace(/'/g, "\\'")}'\n`;
-      if (homeBanner.mbImage) homeFm += `  mbImage: '${homeBanner.mbImage.replace(/'/g, "\\'")}'\n`;
-      if (homeBanner.pcImageAlt) homeFm += `  pcImageAlt: '${homeBanner.pcImageAlt.replace(/'/g, "\\'")}'\n`;
-      if (homeBanner.mbImageAlt) homeFm += `  mbImageAlt: '${homeBanner.mbImageAlt.replace(/'/g, "\\'")}'\n`;
-    }
-    
-    // ADD TAB MENU DATA
-    if (homeTabMenu && homeTabMenu.items && homeTabMenu.items.length > 0) {
-      homeFm += `tabMenu:\n  items:\n`;
-      for (const item of homeTabMenu.items) {
-        const safeText = (item.text || '').replace(/'/g, "\\'");
-        const safeUrl = (item.url || '').replace(/'/g, "\\'");
-        homeFm += `    - text: '${safeText}'\n      url: '${safeUrl}'\n`;
-      }
-    }
-    
-    // ADD HOME MENU DATA
-    if (homeMenu && homeMenu.items && homeMenu.items.length > 0) {
-      homeFm += `menu:\n  items:\n`;
-      for (const item of homeMenu.items) {
-        const safeText = (item.text || '').replace(/'/g, "\\'");
-        const safeUrl = (item.url || '').replace(/'/g, "\\'");
-        homeFm += `    - text: '${safeText}'\n`;
-        homeFm += `      url: '${safeUrl}'\n`;
-        if (item.submenu && item.submenu.length > 0) {
-          homeFm += `      submenu:\n`;
-          for (const subItem of item.submenu) {
-            homeFm += `        - text: '${(subItem.text || '').replace(/'/g, "\\'")}'\n`;
-            homeFm += `          url: '${(subItem.url || '').replace(/'/g, "\\'")}'\n`;
-          }
-        }
-      }
-    }
-    
+
     homeFm += `---\n`;
     fs.writeFileSync(path.join(contentDir, '_index.md'), homeFm, 'utf8');
     logs.push(`  ✓ content/_index.md`);
@@ -1034,11 +1040,6 @@ router.post('/convert', (req, res) => {
       const { bodyClass: pageBodyClass, bodyId: pageBodyId } = extractBodyAttributes(pageHtml);
       const pageCSS     = extractPageCSS(pageHtml);
       const pageJS      = extractPageHeadJS(pageHtml);
-      const tabMenu     = extractTabMenuItems(pageHtml);
-      const carousel    = extractCarouselItems(pageHtml);
-      const banner      = extractBannerData(pageHtml);
-      const breadcrumb  = extractBreadcrumbData(pageHtml);  // ADD THIS IF YOU WANT TO LOG BREADCRUMB INFO
-      const menu        = extractMenuData(pageHtml);  // ADD THIS
       const typeSlug   = slugToTypeName(slug);
       const layoutName = slug.split('/').pop();
 
@@ -1056,11 +1057,6 @@ router.post('/convert', (req, res) => {
           bodyId:      pageBodyId,
           pageCSS,
           pageJS,
-          tabMenu,
-          carousel,
-          banner,
-          breadcrumb,
-          menu
         }),
         'utf8'
       );
@@ -1089,48 +1085,6 @@ router.post('/convert', (req, res) => {
       });
     }
 
-    // ── Step 9b: HTML Analyzer — node--type-* partials ───────────
-    logs.push(`\n── HTML Analyzer ──────────────────────────────────────────`);
-    logs.push(`Scanning HTML files for semantic tags & node--type-* classes…`);
-
-    const analysis = analyzeHtmlFiles(siteSrcDir);
-
-    const semKeys = Object.keys(analysis.semanticTagsSummary);
-    if (semKeys.length) {
-      logs.push(`  Semantic tags detected:`);
-      for (const [tag, info] of Object.entries(analysis.semanticTagsSummary)) {
-        logs.push(`    <${tag}>  ×${info.totalCount}  across ${info.filesFound.length} file(s)`);
-      }
-    } else {
-      logs.push(`  No semantic HTML5 tags detected.`);
-    }
-
-    const nodeTypeKeys = Object.keys(analysis.nodeTypes);
-    if (nodeTypeKeys.length) {
-      logs.push(`  node--type-* classes detected: ${nodeTypeKeys.length} type(s)`);
-      for (const [nt, info] of Object.entries(analysis.nodeTypes)) {
-        logs.push(`    node--type-${nt}  ×${info.count}  in ${info.filesFound.length} file(s)`);
-      }
-      logs.push(`  Writing node partials…`);
-      const partialsWritten = writeNodePartials(analysis.nodeTypes, layoutsDir, logs);
-      logs.push(`  ✓ ${partialsWritten.length} node partial(s) written to layouts/partials/nodes/`);
-    } else {
-      logs.push(`  No node--type-* classes found — skipping node partials.`);
-    }
-
-    // ── Write structural partials (breadcrumbs, banners, menus, etc.) ───
-    logs.push(`\n  Detecting structural patterns (breadcrumbs, banners, menus, tabs, carousels, etc.)…`);
-    const structuralPartialsWritten = writeStructuralPartials(siteSrcDir, layoutsDir, logs);
-    if (structuralPartialsWritten.length) {
-      logs.push(`  ✓ ${structuralPartialsWritten.length} structural partial(s) written to layouts/partials/structures/`);
-      for (const partial of structuralPartialsWritten) {
-        logs.push(`    - ${partial.type}: ${partial.occurrences} occurrence(s) in ${partial.filesFound.length} file(s)`);
-      }
-    } else {
-      logs.push(`  No common structural patterns found.`);
-    }
-    
-    logs.push(`──────────────────────────────────────────────────────────`);
     // ── Step 10: archetypes/default.md ───────────────────────────
     const archetypesDir = path.join(hugoSiteDir, 'archetypes');
     fs.mkdirSync(archetypesDir, { recursive: true });
@@ -1138,12 +1092,58 @@ router.post('/convert', (req, res) => {
     fs.writeFileSync(path.join(archetypesDir, 'default.md'), archetypeDefault, 'utf8');
     logs.push(`\n✓ archetypes/default.md`);
 
+    // ── Step 11: Dynamic partials — AFTER all layout files exist ─
+    // Analyses source HTML, creates partial files, then wires them
+    // into the layout files that were just built in Steps 8–9.
+    // Works for ANY Drupal site — no hard-coded class assumptions.
+    logs.push(`\nDiscovering & wiring dynamic partials…`);
+    let dynamicPartials = { nodePartials: [], structuralPartials: [], drupalComponents: null };
+
+    try {
+      // 1. node--type-* blocks → partials/nodes/node--type-X.html
+      //    AND replaces matching blocks in all layout files
+      const analysis = analyzeHtmlFiles(siteSrcDir);
+      if (Object.keys(analysis.nodeTypes).length > 0) {
+        logs.push(`\n  Node types found: ${Object.keys(analysis.nodeTypes).join(', ')}`);
+        dynamicPartials.nodePartials = writeNodePartials(analysis.nodeTypes, layoutsDir, logs);
+      } else {
+        logs.push(`  No node--type-* blocks detected`);
+      }
+
+      // 2. Structural patterns (breadcrumb, tabs, carousel, accordion, menu, sidebar, banner)
+      //    → partials/structures/X.html  AND replaces in layouts
+      dynamicPartials.structuralPartials = writeStructuralPartials(siteSrcDir, layoutsDir, logs);
+      if (dynamicPartials.structuralPartials.length === 0) {
+        logs.push(`  No shared structural patterns detected`);
+      }
+
+      // 3. Drupal paragraphs, blocks, regions, components
+      //    → partials/{paragraphs,blocks,regions,components}/X.html
+      //    AND replaces matching HTML in all layout files
+      const drupalComponents = extractDrupalComponents(siteSrcDir);
+      const componentResult = writeDrupalComponentPartials(drupalComponents, layoutsDir, logs);
+      dynamicPartials.drupalComponents = componentResult;
+
+    } catch (err) {
+      logs.push(`  ⚠ Dynamic partial discovery warning: ${err.message}`);
+      console.error('Dynamic partial error:', err);
+    }
+
     // ── Summary ───────────────────────────────────────────────────
+    const totalPartials = 3 /* head, header, footer */
+      + (dynamicPartials.nodePartials?.length || 0)
+      + (dynamicPartials.structuralPartials?.length || 0)
+      + (dynamicPartials.drupalComponents?.paragraphs?.length || 0)
+      + (dynamicPartials.drupalComponents?.blocks?.length || 0)
+      + (dynamicPartials.drupalComponents?.regions?.length || 0)
+      + (dynamicPartials.drupalComponents?.components?.length || 0);
+
     logs.push(`\n${'═'.repeat(50)}`);
     logs.push(`Hugo site ready at: Hugo-Sites/${domain}/`);
     logs.push(`  ${convertedPages.length + 1} pages  (1 homepage + ${convertedPages.length} inner)`);
     logs.push(`  ${copiedFolders.length} asset folders copied to static/`);
-    logs.push(`  Partials: head, header, footer${bodyNavMatch ? ', nav' : ''}${nodeTypeKeys.length ? `, +${nodeTypeKeys.length} node type(s)` : ''}${structuralPartialsWritten.length ? `, +${structuralPartialsWritten.length} structural` : ''}`);    logs.push(`${'═'.repeat(50)}`);
+    logs.push(`  ${totalPartials} partials created (head, header, footer + ${totalPartials - 3} dynamic)`);
+    logs.push(`${'═'.repeat(50)}`);
 
     return res.json({
       success:        true,
@@ -1158,13 +1158,17 @@ router.post('/convert', (req, res) => {
       skippedFolders,
       pageCount:      convertedPages.length + 1,
       pages:          convertedPages,
-      analysis: {
-        semanticTagsSummary: analysis.semanticTagsSummary,
-        nodeTypes: Object.fromEntries(
-          Object.entries(analysis.nodeTypes).map(([k, v]) => [k, { count: v.count, filesFound: v.filesFound }])
-        ),
-        structuralPartials: structuralPartialsWritten,  // ← ADD THIS LINE
+      partials: {
+        static:     ['head.html', 'header.html', 'footer.html'],
+        nodes:      dynamicPartials.nodePartials || [],
+        structural: dynamicPartials.structuralPartials || [],
+        paragraphs: dynamicPartials.drupalComponents?.paragraphs || [],
+        blocks:     dynamicPartials.drupalComponents?.blocks || [],
+        regions:    dynamicPartials.drupalComponents?.regions || [],
+        components: dynamicPartials.drupalComponents?.components || [],
+        fields:     dynamicPartials.drupalComponents?.fields || [],
       },
+      totalPartials,
       logs,
     });
 
@@ -1211,415 +1215,19 @@ router.post('/analyze', (req, res) => {
       logs.push(`  (none detected)`);
     }
 
-    // Node types summary
-    const nodeTypeKeys = Object.keys(analysis.nodeTypes);
-    logs.push(`\nnode--type-* classes found: ${nodeTypeKeys.length}`);
-    for (const [nodeType, info] of Object.entries(analysis.nodeTypes)) {
-      logs.push(`  node--type-${nodeType}  ×${info.count}  in ${info.filesFound.length} file(s)`);
-    }
-
-       // Write partials if Hugo site already exists
-    const hugoSiteDir   = path.join(HUGO_SITES_DIR, domain);
-    const layoutsDir    = path.join(hugoSiteDir, 'layouts');
-    let partialsWritten = [];
-    let structuralPartialsWritten = [];  // ← ADD THIS
-
-    if (fs.existsSync(layoutsDir) && nodeTypeKeys.length > 0) {
-      logs.push(`\nWriting node partials to layouts/partials/nodes/…`);
-      partialsWritten = writeNodePartials(analysis.nodeTypes, layoutsDir, logs);
-    } else if (nodeTypeKeys.length > 0) {
-      logs.push(`\n⚠ Hugo site not yet converted — run /convert first to write partials`);
-    }
-
-    // ── Write structural partials ───
-    if (fs.existsSync(layoutsDir)) {
-      logs.push(`\nDetecting structural patterns…`);
-      structuralPartialsWritten = writeStructuralPartials(siteSrcDir, layoutsDir, logs);
-      if (structuralPartialsWritten.length) {
-        logs.push(`✓ ${structuralPartialsWritten.length} structural partial(s) written`);
-      }
-    }
-
     logs.push(`\n✓ Analysis complete`);
 
     return res.json({
       success: true,
       domain,
       semanticTagsSummary: analysis.semanticTagsSummary,
-      nodeTypes: Object.fromEntries(
-        Object.entries(analysis.nodeTypes).map(([k, v]) => [
-          k,
-          { count: v.count, filesFound: v.filesFound },
-        ])
-      ),
       fileReports:     analysis.fileReports,
-      partialsWritten,
-      structuralPartials: structuralPartialsWritten,  // ← ADD THIS
       logs,
     });
 
   } catch (err) {
     console.error('Hugo analyze error:', err);
     logs.push(`✗ Fatal: ${err.message}`);
-    return res.status(500).json({ success: false, error: err.message, logs });
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════════
-//  CONVERT ROUTE  (with integrated analyzer)
-// ═══════════════════════════════════════════════════════════════════
-
-router.post('/convert', (req, res) => {
-  const logs = [];
-
-  try {
-    const domain = parseDomain(req.body.domain);
-    if (!domain) {
-      return res.status(400).json({ success: false, error: 'Invalid domain name' });
-    }
-
-    const siteSrcDir = path.join(SITES_BASE_DIR, domain);
-    if (!fs.existsSync(siteSrcDir)) {
-      return res.status(404).json({ success: false, error: `Source site folder not found: sites/${domain}` });
-    }
-
-    if (!fs.existsSync(HUGO_SITES_DIR)) {
-      fs.mkdirSync(HUGO_SITES_DIR, { recursive: true });
-    }
-
-    const hugoSiteDir = path.join(HUGO_SITES_DIR, domain);
-
-    // ── Step 1: Hugo scaffold + git ───────────────────────────────
-    if (fs.existsSync(hugoSiteDir)) {
-      logs.push(`Hugo site already exists at Hugo-Sites/${domain} — refreshing content & layouts`);
-    } else {
-      const cmd = `"${HUGO_BIN}" new site "${domain}" --format toml`;
-      const out  = execSync(cmd, { cwd: HUGO_SITES_DIR, encoding: 'utf8' });
-      logs.push(out.trim());
-      logs.push(`✓ Hugo site scaffolded at Hugo-Sites/${domain}`);
-    }
-
-    const gitDir = path.join(hugoSiteDir, '.git');
-    if (!fs.existsSync(gitDir)) {
-      const out = execSync('git init', { cwd: hugoSiteDir, encoding: 'utf8' });
-      logs.push(out.trim());
-      logs.push(`✓ Git initialised`);
-    }
-
-    // ── Step 2: Read homepage + extract metadata ──────────────────
-    const indexHtmlPath = path.join(siteSrcDir, 'index.html');
-    let srcHtml = '';
-    let meta    = { canonicalUrl: `https://${domain}`, lang: 'en', title: domain, description: '', keywords: '' };
-
-    if (fs.existsSync(indexHtmlPath)) {
-      srcHtml = fs.readFileSync(indexHtmlPath, 'utf8');
-      meta    = extractMetadata(srcHtml, domain);
-      logs.push(`✓ Metadata extracted from sites/${domain}/index.html`);
-      logs.push(`  baseURL      : ${meta.canonicalUrl}`);
-      logs.push(`  languageCode : ${meta.lang}`);
-      logs.push(`  title        : ${meta.title || '(none)'}`);
-      if (meta.description) logs.push(`  description  : ${meta.description.slice(0, 80)}${meta.description.length > 80 ? '…' : ''}`);
-    } else {
-      logs.push(`⚠ No index.html in sites/${domain}/ — using defaults`);
-    }
-
-    // Write hugo.toml
-    const hugoTomlPath = path.join(hugoSiteDir, 'hugo.toml');
-    fs.writeFileSync(hugoTomlPath, buildHugoToml({ ...meta, siteName: domain }), 'utf8');
-    logs.push(`✓ hugo.toml written`);
-
-    // ── Step 3: Copy static asset folders ────────────────────────
-    logs.push(`\nCopying static assets…`);
-    const staticDir = path.join(hugoSiteDir, 'static');
-    fs.mkdirSync(staticDir, { recursive: true });
-
-    const copiedFolders  = [];
-    const skippedFolders = [];
-
-    for (const folder of ['css', 'js', 'files', 'fonts', 'images']) {
-      const srcFolder  = path.join(siteSrcDir, folder);
-      const destFolder = path.join(staticDir, folder);
-      if (!fs.existsSync(srcFolder)) {
-        skippedFolders.push(folder);
-        continue;
-      }
-      try {
-        fs.cpSync(srcFolder, destFolder, { recursive: true, force: true });
-        const count = countFiles(destFolder);
-        copiedFolders.push(folder);
-        logs.push(`  ✓ ${folder}/  (${count} file${count !== 1 ? 's' : ''})`);
-      } catch (e) {
-        logs.push(`  ✗ ${folder}/  failed: ${e.message}`);
-      }
-    }
-    if (skippedFolders.length) logs.push(`  ⚠ Not found (skipped): ${skippedFolders.join(', ')}`);
-
-    // ── Step 3b: Override any body-hiding CSS files ───────────────
-    const cssSrcDir  = path.join(staticDir, 'css');
-    const BODY_HIDE_PATTERN = /seckit|no.?body|clickjack/i;
-    const overrideCSS = '/* overridden by Hugo conversion — body is always visible */\nbody { display: block !important; }\n';
-    if (fs.existsSync(cssSrcDir)) {
-      for (const file of fs.readdirSync(cssSrcDir)) {
-        if (BODY_HIDE_PATTERN.test(file) && file.endsWith('.css')) {
-          const filePath = path.join(cssSrcDir, file);
-          try {
-            const content = fs.readFileSync(filePath, 'utf8');
-            if (/display\s*:\s*none/i.test(content)) {
-              fs.writeFileSync(filePath, overrideCSS, 'utf8');
-              logs.push(`  ✓ Overrode body-hiding CSS: static/css/${file}`);
-            }
-          } catch { /* ignore */ }
-        }
-      }
-    }
-
-    // ── Step 4: Discover all pages ────────────────────────────────
-    logs.push(`\nDiscovering pages in sites/${domain}/…`);
-    const pages = discoverPages(siteSrcDir);
-    logs.push(`  Found ${pages.length} page${pages.length !== 1 ? 's' : ''}`);
-
-    // Build a sample of page HTMLs for shared partial detection (homepage + up to 4 inner pages)
-    const sampleHtmls = [srcHtml];
-    for (const page of pages.slice(0, 4)) {
-      try { sampleHtmls.push(fs.readFileSync(page.htmlPath, 'utf8')); } catch { /* ignore */ }
-    }
-
-    // ── Step 5: Build shared partials ────────────────────────────
-    logs.push(`\nBuilding partials…`);
-    const layoutsDir  = path.join(hugoSiteDir, 'layouts');
-    const partialsDir = path.join(layoutsDir, 'partials');
-    const defaultDir  = path.join(layoutsDir, '_default');
-    for (const d of [layoutsDir, partialsDir, defaultDir]) {
-      fs.mkdirSync(d, { recursive: true });
-    }
-
-    // head.html — always from homepage
-    const rawHead = extractTag(srcHtml, 'head') || '<head></head>';
-    fs.writeFileSync(path.join(partialsDir, 'head.html'), processHeadPartial(rawHead) + '\n', 'utf8');
-    logs.push(`  ✓ layouts/partials/head.html`);
-
-    // header.html — detect shared version across pages
-    const rawHeader = detectSharedPartial('header', sampleHtmls) || '<header></header>';
-    fs.writeFileSync(path.join(partialsDir, 'header.html'), processHeaderPartial(rawHeader) + '\n', 'utf8');
-    logs.push(`  ✓ layouts/partials/header.html`);
-
-    // footer.html — detect shared version across pages
-    const rawFooter = detectSharedPartial('footer', sampleHtmls) || '<footer></footer>';
-    fs.writeFileSync(path.join(partialsDir, 'footer.html'), rawFooter + '\n', 'utf8');
-    logs.push(`  ✓ layouts/partials/footer.html`);
-
-    // nav.html — if a standalone <nav> exists in the body (outside header/footer)
-    const bodyNavMatch = srcHtml.match(/<nav[^>]*>([\s\S]*?)<\/nav>/i);
-    if (bodyNavMatch) {
-      fs.writeFileSync(path.join(partialsDir, 'nav.html'), `<nav${bodyNavMatch[0].slice(4)}\n`, 'utf8');
-      logs.push(`  ✓ layouts/partials/nav.html`);
-    }
-
-    // ── Step 6: _default layouts ──────────────────────────────────
-    logs.push(`\nBuilding _default layouts…`);
-
-    fs.writeFileSync(path.join(defaultDir, 'baseof.html'), buildBaseof(srcHtml), 'utf8');
-    logs.push(`  ✓ layouts/_default/baseof.html  (HTML shell with partials)`);
-
-    fs.writeFileSync(path.join(defaultDir, 'single.html'),
-      `{{ define "main" }}\n{{ .Content }}\n{{ end }}\n`, 'utf8');
-    logs.push(`  ✓ layouts/_default/single.html  (fallback: renders .Content)`);
-
-    fs.writeFileSync(path.join(defaultDir, 'list.html'),
-      `{{ define "main" }}\n{{ .Content }}\n{{ end }}\n`, 'utf8');
-    logs.push(`  ✓ layouts/_default/list.html    (fallback: renders .Content)`);
-
-    // ── Step 7: Content root directory ───────────────────────────
-    const contentDir = path.join(hugoSiteDir, 'content');
-    fs.mkdirSync(contentDir, { recursive: true });
-
-    // ── Step 8: Homepage ──────────────────────────────────────────
-    logs.push(`\nBuilding homepage…`);
-
-    const { bodyClass: homeBodyClass, bodyId: homeBodyId } = extractBodyAttributes(srcHtml);
-    const homePageCSS = extractPageCSS(srcHtml);
-    const homePageJS  = extractPageHeadJS(srcHtml);
-    const homePageTitle = (meta.pageTitle || meta.title || domain).replace(/'/g, "\\'");
-    let homeFm = `---\ntitle: '${homePageTitle}'\ndraft: false\n`;
-    if (meta.description)  homeFm += `description: '${meta.description.replace(/'/g, "\\'")}'\n`;
-    if (homeBodyClass)     homeFm += `bodyClass: '${homeBodyClass.replace(/'/g, "\\'")}' \n`;
-    if (homeBodyId)        homeFm += `bodyId: '${homeBodyId.replace(/'/g, "\\'")}' \n`;
-    if (homePageCSS.length) {
-      homeFm += `pageCSS:\n`;
-      for (const css of homePageCSS) homeFm += `  - '${css.replace(/'/g, "\\'")}' \n`;
-    }
-    if (homePageJS.length) {
-      homeFm += `pageJS:\n`;
-      for (const js of homePageJS) homeFm += `  - '${js.replace(/'/g, "\\'")}' \n`;
-    }
-    homeFm += `---\n`;
-    fs.writeFileSync(path.join(contentDir, '_index.md'), homeFm, 'utf8');
-    logs.push(`  ✓ content/_index.md`);
-
-    const homeMainContent  = smartExtractMainContent(srcHtml);
-    const subPath          = homepagePath(meta.canonicalUrl, domain);
-
-    if (!subPath) {
-      fs.writeFileSync(path.join(layoutsDir, 'index.html'), buildPageLayout(homeMainContent), 'utf8');
-      logs.push(`  ✓ layouts/index.html  (homepage at /)`);
-    } else {
-      const subDir = path.join(layoutsDir, subPath);
-      fs.mkdirSync(subDir, { recursive: true });
-      fs.writeFileSync(path.join(subDir, 'index.html'), buildPageLayout(homeMainContent), 'utf8');
-      logs.push(`  ✓ layouts/${subPath}/index.html  (homepage at /${subPath}/)`);
-    }
-
-    // ── Step 9: Inner pages ───────────────────────────────────────
-    logs.push(`\nBuilding inner pages…`);
-    const convertedPages = [];
-
-    for (const page of pages) {
-      const { slug, htmlPath } = page;
-
-      let pageHtml = '';
-      try { pageHtml = fs.readFileSync(htmlPath, 'utf8'); }
-      catch (e) {
-        logs.push(`  ✗ [${slug}] cannot read HTML: ${e.message}`);
-        continue;
-      }
-
-      const pageMeta    = extractMetadata(pageHtml, domain);
-      const mainContent = smartExtractMainContent(pageHtml);
-      const { bodyClass: pageBodyClass, bodyId: pageBodyId } = extractBodyAttributes(pageHtml);
-      const pageCSS     = extractPageCSS(pageHtml);
-      const pageJS      = extractPageHeadJS(pageHtml);
-
-      const typeSlug   = slugToTypeName(slug);
-      const layoutName = slug.split('/').pop();
-
-      const contentSlugDir = path.join(contentDir, ...slug.split('/'));
-      fs.mkdirSync(contentSlugDir, { recursive: true });
-      const contentFile = path.join(contentSlugDir, '_index.md');
-      fs.writeFileSync(
-        contentFile,
-        buildContentFrontMatter({
-          slug,
-          title:       pageMeta.pageTitle || pageMeta.title,
-          description: pageMeta.description,
-          abstract:    pageMeta.abstract,
-          bodyClass:   pageBodyClass,
-          bodyId:      pageBodyId,
-          pageCSS,
-          pageJS,
-          tabMenu,
-          carousel,
-          banner,
-          breadcrumb
-        }),
-        'utf8'
-      );
-
-      const layoutTypeDir = path.join(layoutsDir, typeSlug);
-      fs.mkdirSync(layoutTypeDir, { recursive: true });
-      const layoutFile = path.join(layoutTypeDir, `${layoutName}.html`);
-      fs.writeFileSync(layoutFile, buildPageLayout(mainContent), 'utf8');
-
-      const relContent = `content/${slug}/_index.md`;
-      const relLayout  = `layouts/${typeSlug}/${layoutName}.html`;
-
-      logs.push(`  ✓ [${slug}]`);
-      logs.push(`       content : ${relContent}`);
-      logs.push(`       layout  : ${relLayout}`);
-      logs.push(`       title   : ${pageMeta.pageTitle || pageMeta.title || '(none)'}`);
-
-      convertedPages.push({
-        slug,
-        title:       pageMeta.pageTitle || pageMeta.title || slug,
-        description: pageMeta.description || '',
-        contentFile: relContent,
-        layoutFile:  relLayout,
-        typeSlug,
-        layoutName,
-      });
-    }
-
-    // ── Step 9b: HTML Analyzer — node--type-* partials ───────────
-    logs.push(`\n── HTML Analyzer ──────────────────────────────────────────`);
-    logs.push(`Scanning HTML files for semantic tags & node--type-* classes…`);
-
-    const analysis = analyzeHtmlFiles(siteSrcDir);
-
-    const semKeys = Object.keys(analysis.semanticTagsSummary);
-    if (semKeys.length) {
-      logs.push(`  Semantic tags detected:`);
-      for (const [tag, info] of Object.entries(analysis.semanticTagsSummary)) {
-        logs.push(`    <${tag}>  ×${info.totalCount}  across ${info.filesFound.length} file(s)`);
-      }
-    } else {
-      logs.push(`  No semantic HTML5 tags detected.`);
-    }
-
-    const nodeTypeKeys = Object.keys(analysis.nodeTypes);
-    if (nodeTypeKeys.length) {
-      logs.push(`  node--type-* classes detected: ${nodeTypeKeys.length} type(s)`);
-      for (const [nt, info] of Object.entries(analysis.nodeTypes)) {
-        logs.push(`    node--type-${nt}  ×${info.count}  in ${info.filesFound.length} file(s)`);
-      }
-      logs.push(`  Writing node partials…`);
-      const partialsWritten = writeNodePartials(analysis.nodeTypes, layoutsDir, logs);
-      logs.push(`  ✓ ${partialsWritten.length} node partial(s) written to layouts/partials/nodes/`);
-    } else {
-      logs.push(`  No node--type-* classes found — skipping node partials.`);
-    }
-
-    // ── Write structural partials ───
-    logs.push(`\n  Detecting structural patterns…`);
-    const structuralPartialsWritten = writeStructuralPartials(siteSrcDir, layoutsDir, logs);
-    if (structuralPartialsWritten.length) {
-      logs.push(`  ✓ ${structuralPartialsWritten.length} structural partial(s) written to layouts/partials/structures/`);
-      for (const partial of structuralPartialsWritten) {
-        logs.push(`    - ${partial.type}: ${partial.occurrences} occurrence(s) in ${partial.filesFound.length} file(s)`);
-      }
-    } else {
-      logs.push(`  No common structural patterns found.`);
-    }
-
-    logs.push(`──────────────────────────────────────────────────────────`);
-
-    // ── Step 10: archetypes/default.md ───────────────────────────
-    const archetypesDir = path.join(hugoSiteDir, 'archetypes');
-    fs.mkdirSync(archetypesDir, { recursive: true });
-    const archetypeDefault = `---\ntitle: '{{ replace .File.ContentBaseName "-" " " | title }}'\ndraft: false\n---\n`;
-    fs.writeFileSync(path.join(archetypesDir, 'default.md'), archetypeDefault, 'utf8');
-    logs.push(`\n✓ archetypes/default.md`);
-
-    // ── Summary ───────────────────────────────────────────────────
-    logs.push(`\n${'═'.repeat(50)}`);
-    logs.push(`Hugo site ready at: Hugo-Sites/${domain}/`);
-    logs.push(`  ${convertedPages.length + 1} pages  (1 homepage + ${convertedPages.length} inner)`);
-    logs.push(`  ${copiedFolders.length} asset folders copied to static/`);
-    logs.push(`  Partials: head, header, footer${bodyNavMatch ? ', nav' : ''}${nodeTypeKeys.length ? `, +${nodeTypeKeys.length} node type(s)` : ''}`);
-    logs.push(`  Partials: head, header, footer${bodyNavMatch ? ', nav' : ''}${nodeTypeKeys.length ? `, +${nodeTypeKeys.length} node type(s)` : ''}${structuralPartialsWritten.length ? `, +${structuralPartialsWritten.length} structural` : ''}`);
-    return res.json({
-      success:        true,
-      domain,
-      hugoDir:        `Hugo-Sites/${domain}`,
-      baseURL:        meta.canonicalUrl,
-      lang:           meta.lang,
-      siteTitle:      meta.title || domain,
-      description:    meta.description,
-      keywords:       meta.keywords,
-      copiedFolders,
-      skippedFolders,
-      pageCount:      convertedPages.length + 1,
-      pages:          convertedPages,
-      analysis: {
-        semanticTagsSummary: analysis.semanticTagsSummary,
-        nodeTypes: Object.fromEntries(
-          Object.entries(analysis.nodeTypes).map(([k, v]) => [k, { count: v.count, filesFound: v.filesFound }])
-        ),
-      },
-      logs,
-    });
-
-  } catch (err) {
-    console.error('Hugo convert error:', err);
-    logs.push(`✗ Fatal error: ${err.message}`);
     return res.status(500).json({ success: false, error: err.message, logs });
   }
 });

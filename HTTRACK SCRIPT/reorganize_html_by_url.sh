@@ -246,10 +246,11 @@ while IFS= read -r site || [ -n "${site-}" ]; do
     cp -p "$html_file" "$target_file"
 
     # Remove HTTrack comments and Drupal generator
-    sed_i '/<!-- Mirrored from .* by HTTrack/d' "$target_file"
-    sed_i '/<!-- Added by HTTrack -->/d' "$target_file"
-    sed_i '/<!-- \/Added by HTTrack -->/d' "$target_file"
-    sed_i '/<meta name="Generator" content="Drupal.*".*\/>/d' "$target_file"
+    # Commented out the lines that remove tags to ensure no tags are removed from the HTML file
+    # sed_i '/<!-- Mirrored from .* by HTTrack/d' "$target_file"
+    # sed_i '/<!-- Added by HTTrack -->/d' "$target_file"
+    # sed_i '/<!-- \/Added by HTTrack -->/d' "$target_file"
+    # sed_i '/<meta name="Generator" content="Drupal.*".*\/>/d' "$target_file"
 
     # Rewrite asset references to root-relative, anchored to href/src
     sed_i "s|\(href\|src\)=\([\"']\)images/\([^\"' ]*\.css\)|\1=\2/css/\3|g" "$target_file"
@@ -422,4 +423,3 @@ log "All reorganized sites are under: $DST_ROOT/"
 log "Asset references (CSS/JS/PDF/Fonts) are root-relative."
 log "Internal links updated to clean root-relative URLs."
 log "HTTrack comments removed from HTML; sitemap.xml generated per site."
-``
