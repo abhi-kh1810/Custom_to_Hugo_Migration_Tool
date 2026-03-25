@@ -172,26 +172,39 @@ function extractBodyAttributes(html) {
  * These will be stored in front matter so each page loads its own CSS.
  */
 function extractPageCSS(html) {
-  const links = [];
-  const regex = /<link\b([^>]*?)\/?>/gi;
+  const screen = [];
+  const print  = [];
+  const regex  = /<link\b([^>]*?)\/?>/gi;
   let match;
+
   while ((match = regex.exec(html)) !== null) {
     const attrs = match[1];
     if (/\brel=["']stylesheet["']/i.test(attrs) || /\btype=["']text\/css["']/i.test(attrs)) {
       const hrefMatch = attrs.match(/\bhref=["']([^"']+)["']/i);
-      if (hrefMatch) {
-        const href = hrefMatch[1];
-        if (
-          !href.startsWith('http://') &&
-          !href.startsWith('https://') &&
-          !/seckit|no.?body|clickjacking/i.test(href)
-        ) {
-          links.push(href);
-        }
+      if (!hrefMatch) continue;
+
+      const href = hrefMatch[1];
+      if (
+        href.startsWith('http://') ||
+        href.startsWith('https://') ||
+        /seckit|no.?body|clickjacking/i.test(href)
+      ) {
+        continue;
+      }
+
+      const mediaMatch = attrs.match(/\bmedia=["']([^"']+)["']/i);
+      const mediaVal   = mediaMatch ? mediaMatch[1].toLowerCase() : '';
+      const isPrint    = mediaVal.includes('print');
+
+      if (isPrint) {
+        print.push(href);
+      } else {
+        screen.push(href);
       }
     }
   }
-  return links;
+
+  return { screen, print };
 }
 
 /**
@@ -443,8 +456,15 @@ function processHeadPartial(headHtml) {
   h = h.replace(/<script\b[^>]*\bsrc=["'](?!https?:\/\/)[^"']+["'][^>]*>/gi, '');
 
   // Hugo template blocks — render per-page CSS & JS from front matter params.
-  const cssBlock = `  {{- range .Params.pageCSS }}\n  <link rel="stylesheet" media="all" href="{{ . }}">\n  {{- end }}`;
-  const jsBlock  = `  {{- range .Params.pageJS }}\n  <script src="{{ . }}"></script>\n  {{- end }}`;
+  const cssBlock = `  {{- range .Params.pageCSS }}
+  <link rel="stylesheet" media="all" href="{{ . }}">
+  {{- end }}
+  {{- range .Params.pagePrintCSS }}
+  <link rel="stylesheet" media="print" href="{{ . }}">
+  {{- end }}`;
+  const jsBlock  = `  {{- range .Params.pageJS }}
+  <script src="{{ . }}"></script>
+  {{- end }}`;
   h = h.replace(/(<\/head>)/i, `${cssBlock}\n${jsBlock}\n$1`);
 
   return h;
@@ -563,8 +583,7 @@ function slugToTypeName(slug) {
  * This gives every page its own isolated layout file, matching
  * the reference site pattern exactly.
  */
-function buildContentFrontMatter({ slug, title, description, abstract, bodyClass, bodyId, pageCSS, pageJS, tabMenu, carousel, banner, breadcrumb }) {
-  const typeSlug   = slugToTypeName(slug);
+function buildContentFrontMatter({ slug, title, description, abstract, bodyClass, bodyId, pageCSS, pagePrintCSS, pageJS, tabMenu, carousel, banner, breadcrumb }) {  const typeSlug   = slugToTypeName(slug);
   const layoutName = slug.split('/').pop();
   // YAML single-quoted scalars: only ' needs escaping, as '' (doubled).
   const yml = (s) => (s || '').replace(/'/g, "''");
@@ -581,6 +600,10 @@ function buildContentFrontMatter({ slug, title, description, abstract, bodyClass
   if (pageCSS && pageCSS.length) {
     fm += `pageCSS:\n`;
     for (const css of pageCSS) fm += `  - '${yml(css)}'\n`;
+  }
+  if (pagePrintCSS && pagePrintCSS.length) {
+    fm += `pagePrintCSS:\n`;
+    for (const css of pagePrintCSS) fm += `  - '${yml(css)}'\n`;
   }
   if (pageJS && pageJS.length) {
     fm += `pageJS:\n`;
@@ -986,7 +1009,7 @@ router.post('/convert', (req, res) => {
     logs.push(`\nBuilding homepage…`);
 
     const { bodyClass: homeBodyClass, bodyId: homeBodyId } = extractBodyAttributes(srcHtml);
-    const homePageCSS = extractPageCSS(srcHtml);
+    const { screen: homePageCSS, print: homePagePrintCSS } = extractPageCSS(srcHtml);
     const homePageJS  = extractPageHeadJS(srcHtml);
     const homePageTitle = (meta.pageTitle || meta.title || domain);
     // YAML single-quoted scalars: escape ' as ''
@@ -998,6 +1021,10 @@ router.post('/convert', (req, res) => {
     if (homePageCSS.length) {
       homeFm += `pageCSS:\n`;
       for (const css of homePageCSS) homeFm += `  - '${yml(css)}'\n`;
+    }
+    if (homePagePrintCSS && homePagePrintCSS.length) {
+      homeFm += `pagePrintCSS:\n`;
+      for (const css of homePagePrintCSS) homeFm += `  - '${yml(css)}'\n`;
     }
     if (homePageJS.length) {
       homeFm += `pageJS:\n`;
@@ -1038,7 +1065,7 @@ router.post('/convert', (req, res) => {
       const pageMeta    = extractMetadata(pageHtml, domain);
       const mainContent = smartExtractMainContent(pageHtml);
       const { bodyClass: pageBodyClass, bodyId: pageBodyId } = extractBodyAttributes(pageHtml);
-      const pageCSS     = extractPageCSS(pageHtml);
+      const { screen: pageCSS, print: pagePrintCSS } = extractPageCSS(pageHtml);
       const pageJS      = extractPageHeadJS(pageHtml);
       const typeSlug   = slugToTypeName(slug);
       const layoutName = slug.split('/').pop();
@@ -1056,6 +1083,7 @@ router.post('/convert', (req, res) => {
           bodyClass:   pageBodyClass,
           bodyId:      pageBodyId,
           pageCSS,
+          pagePrintCSS,
           pageJS,
         }),
         'utf8'
