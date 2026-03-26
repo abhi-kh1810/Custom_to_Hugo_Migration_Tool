@@ -7,6 +7,62 @@ const ASSET_FOLDERS = new Set([
   'css', 'js', 'images', 'fonts', 'files', 'unprocessed',
   'errors', '.git', 'node_modules', '__macosx', 'thumbs',
 ]);
+
+// ═══════════════════════════════════════════════════════════════════
+//  LANGUAGE-AWARE FILE FILTER
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Check if a relative path should be included based on language filter options.
+ *
+ * @param {string} relPath - relative path of the file
+ * @param {object} options
+ * @param {string[]} [options.excludePrefixes] - exclude files under these path prefixes
+ * @param {string}   [options.includePrefix]   - only include files under this prefix
+ * @returns {boolean}
+ */
+function shouldIncludeFile(relPath, options = {}) {
+  if (options.excludePrefixes) {
+    for (const prefix of options.excludePrefixes) {
+      if (relPath.startsWith(prefix + '/') || relPath === prefix) return false;
+    }
+  }
+  if (options.includePrefix) {
+    if (!relPath.startsWith(options.includePrefix + '/') && relPath !== options.includePrefix) return false;
+  }
+  return true;
+}
+
+/**
+ * Check if a layout path should be included based on language layout filter options.
+ *
+ * @param {string} relPath - relative path from layoutsDir
+ * @param {object} options
+ * @param {string[]} [options.excludeLayoutPrefixes] - exclude layout dirs under these prefixes
+ * @param {string}   [options.includeLayoutPrefix]   - only include layouts under this prefix
+ * @returns {boolean}
+ */
+function shouldIncludeLayout(relPath, options = {}) {
+  // Detect language-tagged homepage files like "index.fr.html" at the layouts root
+  const langFileMatch = path.basename(relPath).match(/^index\.([a-z]{2,3})\.html$/);
+  const fileLang = langFileMatch ? langFileMatch[1] : null;
+
+  if (options.excludeLayoutPrefixes) {
+    for (const prefix of options.excludeLayoutPrefixes) {
+      if (relPath.startsWith(prefix + '/') || relPath === prefix) return false;
+      // Also exclude language-tagged homepage files for excluded languages (e.g. index.fr.html)
+      if (fileLang === prefix) return false;
+    }
+  }
+  if (options.includeLayoutPrefix) {
+    if (!relPath.startsWith(options.includeLayoutPrefix + '/') && relPath !== options.includeLayoutPrefix) {
+      // Allow language-tagged homepage files matching the included language (e.g. index.fr.html)
+      if (!fileLang || fileLang !== options.includeLayoutPrefix) return false;
+    }
+  }
+  return true;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  HUGO TEMPLATE ESCAPER
 // ═══════════════════════════════════════════════════════════════════
@@ -150,7 +206,7 @@ function normalizeHtml(html) {
  */
 export { writeNodePartials, writeStructuralPartials, extractDrupalComponents, writeDrupalComponentPartials };
 
-export function analyzeHtmlFiles(siteSrcDir) {
+export function analyzeHtmlFiles(siteSrcDir, options = {}) {
   const fileReports         = [];
   const semanticTagsSummary = {};
   const nodeTypeMap         = {};
@@ -168,6 +224,9 @@ export function analyzeHtmlFiles(siteSrcDir) {
         if (!ASSET_FOLDERS.has(entry.name.toLowerCase())) walk(absPath, relPath);
         continue;
       }
+
+      // Language filter: skip files that don't match the language filter
+      if (!shouldIncludeFile(relPath, options)) continue;
 
       if (!entry.name.endsWith('.html')) continue;
 
@@ -237,26 +296,31 @@ export function analyzeHtmlFiles(siteSrcDir) {
  * node--type-<nodeType> blocks (that structurally match canonicalHtml)
  * with the Hugo partial reference string.
  */
-function replaceNodeBlocksInLayouts(layoutsDir, nodeType, canonicalHtml, partialRef, logs) {
+function replaceNodeBlocksInLayouts(layoutsDir, nodeType, canonicalHtml, partialRef, logs, options = {}) {
   const norm = normalizeHtml(canonicalHtml);
   const nodesPartialDir = path.resolve(layoutsDir, 'partials', 'nodes');
 
-  function walk(dir) {
+  function walk(dir, relBase) {
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
     catch { return; }
 
     for (const entry of entries) {
       const absPath = path.join(dir, entry.name);
+      const relPath = relBase ? `${relBase}/${entry.name}` : entry.name;
 
       if (entry.isDirectory()) {
         // ── Skip the nodes partial directory entirely ──
         if (path.resolve(absPath) === nodesPartialDir) continue;
-        walk(absPath);
+        // ── Language filter for layout directories ──
+        if (!shouldIncludeLayout(relPath, options)) continue;
+        walk(absPath, relPath);
         continue;
       }
 
       if (!entry.name.endsWith('.html')) continue;
+      // ── Language filter for root-level layout files (e.g. index.fr.html) ──
+      if (!shouldIncludeLayout(relPath, options)) continue;
 
       let content;
       try { content = fs.readFileSync(absPath, 'utf8'); }
@@ -313,7 +377,7 @@ function replaceNodeBlocksInLayouts(layoutsDir, nodeType, canonicalHtml, partial
     }
   }
 
-  walk(layoutsDir);
+  walk(layoutsDir, '');
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -327,7 +391,8 @@ function replaceNodeBlocksInLayouts(layoutsDir, nodeType, canonicalHtml, partial
  *
  * Returns array of { nodeType, partialFileName, filesFound }.
  */
-function writeNodePartials(nodeTypes, layoutsDir, logs) {
+function writeNodePartials(nodeTypes, layoutsDir, logs, options = {}) {
+  const langSuffix = options.langSuffix || '';
   const nodesPartialDir = path.join(layoutsDir, 'partials', 'nodes');
   fs.mkdirSync(nodesPartialDir, { recursive: true });
 
@@ -336,7 +401,9 @@ function writeNodePartials(nodeTypes, layoutsDir, logs) {
   for (const [nodeType, info] of Object.entries(nodeTypes)) {
     if (info.count === 0) continue;
 
-    const partialFileName = `node--type-${nodeType}.html`;
+    const partialFileName = langSuffix
+      ? `node--type-${nodeType}-${langSuffix}.html`
+      : `node--type-${nodeType}.html`;
     const partialFilePath = path.join(nodesPartialDir, partialFileName);
     const partialRef      = `{{ partial "nodes/${partialFileName}" . }}`;
 
@@ -349,7 +416,7 @@ function writeNodePartials(nodeTypes, layoutsDir, logs) {
     // ── Replace matching raw blocks in layout files (skips partials/nodes/) ──
     const cleanedHtml = info.canonicalHtml
       .replace(/\{\{-?\s*partial\s+"[^"]*"\s+\.[^}]*?-?\}\}/gi, '');
-    replaceNodeBlocksInLayouts(layoutsDir, nodeType, cleanedHtml, partialRef, logs);
+    replaceNodeBlocksInLayouts(layoutsDir, nodeType, cleanedHtml, partialRef, logs, options);
 
     written.push({ nodeType, partialFileName, filesFound: info.filesFound });
   }
@@ -873,26 +940,31 @@ function extractBalancedStructuralBlock(html, tag, startIndex, openTagLength) {
  * Walk all .html files under layoutsDir and replace occurrences of
  * structural blocks (that match canonicalHtml) with the Hugo partial reference.
  */
-function replaceStructuralBlocksInLayouts(layoutsDir, type, canonicalHtml, partialRef, logs) {
+function replaceStructuralBlocksInLayouts(layoutsDir, type, canonicalHtml, partialRef, logs, options = {}) {
   const structuresPartialDir = path.resolve(layoutsDir, 'partials', 'structures');
   const nodesPartialDir = path.resolve(layoutsDir, 'partials', 'nodes');
 
-  function walk(dir) {
+  function walk(dir, relBase) {
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
     catch { return; }
 
     for (const entry of entries) {
       const absPath = path.join(dir, entry.name);
+      const relPath = relBase ? `${relBase}/${entry.name}` : entry.name;
 
       if (entry.isDirectory()) {
         const resolved = path.resolve(absPath);
         if (resolved === structuresPartialDir || resolved === nodesPartialDir) continue;
-        walk(absPath);
+        // ── Language filter for layout directories ──
+        if (!shouldIncludeLayout(relPath, options)) continue;
+        walk(absPath, relPath);
         continue;
       }
 
       if (!entry.name.endsWith('.html')) continue;
+      // ── Language filter for root-level layout files (e.g. index.fr.html) ──
+      if (!shouldIncludeLayout(relPath, options)) continue;
 
       let content;
       try { content = fs.readFileSync(absPath, 'utf8'); }
@@ -910,36 +982,38 @@ function replaceStructuralBlocksInLayouts(layoutsDir, type, canonicalHtml, parti
       if (positions.length === 0) continue;
 
       let result = content;
+      const ls = options.langSuffix || '';
       for (const { start, end } of positions.reverse()) {
         // Use appropriate partial call based on type
+        // For lang-suffixed partials, reference the correct file name
         let replacement = partialRef;
+        const suffix = ls ? `-${ls}` : '';
         
         switch (type) {
           case 'tab-menu':
-            replacement = '{{ partial "structures/tab-menu.html" .Params.tabMenu }}';
+            replacement = `{{ partial "structures/tab-menu${suffix}.html" .Params.tabMenu }}`;
             break;
           case 'carousel':
-            replacement = '{{ partial "structures/carousel.html" .Params.carousel }}';
+            replacement = `{{ partial "structures/carousel${suffix}.html" .Params.carousel }}`;
             break;
           case 'banner':
-            replacement = '{{ partial "structures/banner.html" .Params.banner }}';
+            replacement = `{{ partial "structures/banner${suffix}.html" .Params.banner }}`;
             break;
           case 'menu':
             // navMenu avoids Hugo's reserved built-in 'menu' front matter key
-            replacement = '{{ partial "structures/menu.html" .Params.navMenu }}';
+            replacement = `{{ partial "structures/menu${suffix}.html" .Params.navMenu }}`;
             break;
           case 'breadcrumb':
-            replacement = '{{ partial "structures/breadcrumb.html" .Params.breadcrumb }}';
+            replacement = `{{ partial "structures/breadcrumb${suffix}.html" .Params.breadcrumb }}`;
             break;
           case 'accordion':
-            replacement = '{{ partial "structures/accordion.html" .Params.accordion }}';
+            replacement = `{{ partial "structures/accordion${suffix}.html" .Params.accordion }}`;
             break;
           case 'sidebar':
-            replacement = '{{ partial "structures/sidebar.html" .Params.sidebar }}';
+            replacement = `{{ partial "structures/sidebar${suffix}.html" .Params.sidebar }}`;
             break;
           default:
-            // For any other types, use generic context
-            replacement = `{{ partial "structures/${type}.html" . }}`;
+            replacement = `{{ partial "structures/${type}${suffix}.html" . }}`;
         }
         
         result = result.slice(0, start) + replacement + result.slice(end);
@@ -955,7 +1029,7 @@ function replaceStructuralBlocksInLayouts(layoutsDir, type, canonicalHtml, parti
     }
   }
 
-  walk(layoutsDir);
+  walk(layoutsDir, '');
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -969,7 +1043,8 @@ function replaceStructuralBlocksInLayouts(layoutsDir, type, canonicalHtml, parti
  *
  * Returns array of { type, partialFileName, occurrences, filesFound }
  */
-function writeStructuralPartials(siteSrcDir, layoutsDir, logs) {
+function writeStructuralPartials(siteSrcDir, layoutsDir, logs, options = {}) {
+  const langSuffix = options.langSuffix || '';
   const structuresDir = path.join(layoutsDir, 'partials', 'structures');
   fs.mkdirSync(structuresDir, { recursive: true });
 
@@ -977,7 +1052,7 @@ function writeStructuralPartials(siteSrcDir, layoutsDir, logs) {
   const layoutsStructuresDir = path.resolve(layoutsDir, 'partials', 'structures');
   const layoutsNodesDir = path.resolve(layoutsDir, 'partials', 'nodes');
 
-  function walk(dir, relBase, options = {}) {
+  function walk(dir, relBase, walkOpts = {}) {
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
     catch { return; }
@@ -989,12 +1064,15 @@ function writeStructuralPartials(siteSrcDir, layoutsDir, logs) {
       if (entry.isDirectory()) {
         const resolved = path.resolve(absPath);
 
-        if (options.skipAssetFolders && ASSET_FOLDERS.has(entry.name.toLowerCase())) continue;
-        if (options.skipPartialDirs && (resolved === layoutsStructuresDir || resolved === layoutsNodesDir)) continue;
+        if (walkOpts.skipAssetFolders && ASSET_FOLDERS.has(entry.name.toLowerCase())) continue;
+        if (walkOpts.skipPartialDirs && (resolved === layoutsStructuresDir || resolved === layoutsNodesDir)) continue;
 
-        walk(absPath, relPath, options);
+        walk(absPath, relPath, walkOpts);
         continue;
       }
+
+      // Language filter: skip files that don't match
+      if (walkOpts.langFilter && !shouldIncludeFile(relPath, walkOpts.langFilter)) continue;
 
       if (!entry.name.endsWith('.html')) continue;
 
@@ -1003,7 +1081,7 @@ function writeStructuralPartials(siteSrcDir, layoutsDir, logs) {
       catch { continue; }
 
       const blocks = extractStructuralBlocks(html);
-      const reportPath = options.label ? `${options.label}/${relPath}` : relPath;
+      const reportPath = walkOpts.label ? `${walkOpts.label}/${relPath}` : relPath;
 
       for (const block of blocks) {
         if (!typeMap[block.type]) {
@@ -1017,7 +1095,12 @@ function writeStructuralPartials(siteSrcDir, layoutsDir, logs) {
     }
   }
 
-  walk(siteSrcDir, '', { label: 'source', skipAssetFolders: true });
+  // Apply language filtering to the source scan
+  const sourceLangFilter = {};
+  if (options.excludePrefixes) sourceLangFilter.excludePrefixes = options.excludePrefixes;
+  if (options.includePrefix) sourceLangFilter.includePrefix = options.includePrefix;
+
+  walk(siteSrcDir, '', { label: 'source', skipAssetFolders: true, langFilter: Object.keys(sourceLangFilter).length ? sourceLangFilter : null });
   walk(layoutsDir, '', { label: 'layouts', skipPartialDirs: true });
 
   const written = [];
@@ -1025,7 +1108,7 @@ function writeStructuralPartials(siteSrcDir, layoutsDir, logs) {
   // ═══════════════════════════════════════════════════════════════════
   // THRESHOLD: Only create partials for truly common structures
   // ═══════════════════════════════════════════════════════════════════
-  const MIN_FILES_THRESHOLD = 2; // Structure must appear in at least 10 files
+  const MIN_FILES_THRESHOLD = 2;
 
   for (const [type, data] of Object.entries(typeMap)) {
     if (data.blocks.length === 0) continue;
@@ -1052,7 +1135,7 @@ function writeStructuralPartials(siteSrcDir, layoutsDir, logs) {
     const canonicalBlock = data.blocks.find(b => b.norm === canonicalNorm);
     if (!canonicalBlock) continue;
 
-    const partialFileName = `${type}.html`;
+    const partialFileName = langSuffix ? `${type}-${langSuffix}.html` : `${type}.html`;
     const partialFilePath = path.join(structuresDir, partialFileName);
     const partialRef = `{{ partial "structures/${partialFileName}" . }}`;
     const partial = buildStructuralPartial(type, canonicalBlock.html, data.blocks.length);
@@ -1067,7 +1150,7 @@ function writeStructuralPartials(siteSrcDir, layoutsDir, logs) {
 
     const cleanedHtml = canonicalBlock.html
       .replace(/\{\{-?\s*partial\s+"[^"]*"\s+\.[^}]*?-?\}\}/gi, '');
-    replaceStructuralBlocksInLayouts(layoutsDir, type, cleanedHtml, partialRef, logs);
+    replaceStructuralBlocksInLayouts(layoutsDir, type, cleanedHtml, partialRef, logs, options);
 
     written.push({ type, partialFileName, occurrences: data.blocks.length, filesFound });
   }
@@ -1644,7 +1727,7 @@ function buildDynamicMenuPartial(outerHtml, occurrenceCount) {
  *   componentPatterns : { [type]: { count, filesFound[], canonicalHtml } },
  * }
  */
-function extractDrupalComponents(siteSrcDir) {
+function extractDrupalComponents(siteSrcDir, options = {}) {
   const paragraphTypes    = {};
   const fieldTypes        = {};
   const blockTypes        = {};
@@ -1713,6 +1796,10 @@ function extractDrupalComponents(siteSrcDir) {
         if (!ASSET_FOLDERS.has(entry.name.toLowerCase())) walk(absPath, relPath);
         continue;
       }
+
+      // Language filter: skip files that don't match
+      if (!shouldIncludeFile(relPath, options)) continue;
+
       if (!entry.name.endsWith('.html')) continue;
 
       let html;
@@ -1848,17 +1935,20 @@ function extractDrupalComponents(siteSrcDir) {
  * @param {string[]} logs - Accumulator for log messages
  * @returns {{ paragraphs: object[], fields: object[], blocks: object[], regions: object[], components: object[] }}
  */
-function writeDrupalComponentPartials(components, layoutsDir, logs) {
+function writeDrupalComponentPartials(components, layoutsDir, logs, options = {}) {
+  const langSuffix = options.langSuffix || '';
   const result = { paragraphs: [], fields: [], blocks: [], regions: [], components: [] };
 
   // ── Paragraph partials ────────────────────────────────────────
   if (Object.keys(components.paragraphTypes).length > 0) {
     const dir = path.join(layoutsDir, 'partials', 'paragraphs');
     fs.mkdirSync(dir, { recursive: true });
-    logs.push(`\n  Paragraph types detected:`);
+    logs.push(`\n  Paragraph types detected${langSuffix ? ` (${langSuffix})` : ''}:`);
 
     for (const [pType, info] of Object.entries(components.paragraphTypes)) {
-      const fileName = `paragraph--${pType}.html`;
+      const fileName = langSuffix
+        ? `paragraph--${pType}-${langSuffix}.html`
+        : `paragraph--${pType}.html`;
       const filePath = path.join(dir, fileName);
       const partial = buildComponentPartial('paragraph', pType, info.canonicalHtml, info.count, info.filesFound);
       fs.writeFileSync(filePath, partial, 'utf8');
@@ -1875,9 +1965,11 @@ function writeDrupalComponentPartials(components, layoutsDir, logs) {
       .filter(([, info]) => info.filesFound.length >= 2);
 
     if (sharedBlocks.length > 0) {
-      logs.push(`\n  Shared block types detected:`);
+      logs.push(`\n  Shared block types detected${langSuffix ? ` (${langSuffix})` : ''}:`);
       for (const [bType, info] of sharedBlocks) {
-        const fileName = `block--${bType}.html`;
+        const fileName = langSuffix
+          ? `block--${bType}-${langSuffix}.html`
+          : `block--${bType}.html`;
         const filePath = path.join(dir, fileName);
         const partial = buildComponentPartial('block', bType, info.canonicalHtml, info.count, info.filesFound);
         fs.writeFileSync(filePath, partial, 'utf8');
@@ -1896,9 +1988,11 @@ function writeDrupalComponentPartials(components, layoutsDir, logs) {
       .filter(([rType, info]) => info.filesFound.length >= 2 && rType !== 'content');
 
     if (sharedRegions.length > 0) {
-      logs.push(`\n  Shared region types detected:`);
+      logs.push(`\n  Shared region types detected${langSuffix ? ` (${langSuffix})` : ''}:`);
       for (const [rType, info] of sharedRegions) {
-        const fileName = `region--${rType}.html`;
+        const fileName = langSuffix
+          ? `region--${rType}-${langSuffix}.html`
+          : `region--${rType}.html`;
         const filePath = path.join(dir, fileName);
         const partial = buildComponentPartial('region', rType, info.canonicalHtml, info.count, info.filesFound);
         fs.writeFileSync(filePath, partial, 'utf8');
@@ -1912,10 +2006,12 @@ function writeDrupalComponentPartials(components, layoutsDir, logs) {
   if (Object.keys(components.componentPatterns).length > 0) {
     const dir = path.join(layoutsDir, 'partials', 'components');
     fs.mkdirSync(dir, { recursive: true });
-    logs.push(`\n  Component patterns detected:`);
+    logs.push(`\n  Component patterns detected${langSuffix ? ` (${langSuffix})` : ''}:`);
 
     for (const [cType, info] of Object.entries(components.componentPatterns)) {
-      const fileName = `${cType}.html`;
+      const fileName = langSuffix
+        ? `${cType}-${langSuffix}.html`
+        : `${cType}.html`;
       const filePath = path.join(dir, fileName);
       const partial = buildComponentPartial('component', cType, info.canonicalHtml, info.count, info.filesFound);
       fs.writeFileSync(filePath, partial, 'utf8');
@@ -1939,8 +2035,8 @@ function writeDrupalComponentPartials(components, layoutsDir, logs) {
   }
 
   // ── Replace occurrences in layout files ──────────────────────
-  logs.push(`\n  Wiring partials into layout files…`);
-  replaceDrupalComponentsInLayouts(result, layoutsDir, logs);
+  logs.push(`\n  Wiring partials into layout files${langSuffix ? ` (${langSuffix})` : ''}…`);
+  replaceDrupalComponentsInLayouts(result, layoutsDir, logs, options);
 
   return result;
 }
@@ -1989,7 +2085,7 @@ function buildComponentPartial(category, type, outerHtml, count, filesFound) {
  * @param {string} layoutsDir - Path to Hugo layouts/ directory
  * @param {string[]} logs - Accumulator for log messages
  */
-function replaceDrupalComponentsInLayouts(results, layoutsDir, logs) {
+function replaceDrupalComponentsInLayouts(results, layoutsDir, logs, options = {}) {
   const partialsDir = path.resolve(layoutsDir, 'partials');
 
   // Build replacement rules from the discovered components
@@ -2053,20 +2149,26 @@ function replaceDrupalComponentsInLayouts(results, layoutsDir, logs) {
   if (rules.length === 0) return;
 
   // ── Walk all layout html files (skip partials dir) ──────────────
-  function walk(dir) {
+  function walk(dir, relBase) {
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
     catch { return; }
 
     for (const entry of entries) {
       const absPath = path.join(dir, entry.name);
+      const relPath = relBase ? `${relBase}/${entry.name}` : entry.name;
+
       if (entry.isDirectory()) {
         // Skip the partials directory itself (we don't want to modify the very files we just wrote)
         if (path.resolve(absPath) === partialsDir) continue;
-        walk(absPath);
+        // ── Language filter for layout directories ──
+        if (!shouldIncludeLayout(relPath, options)) continue;
+        walk(absPath, relPath);
         continue;
       }
       if (!entry.name.endsWith('.html')) continue;
+      // ── Language filter for root-level layout files (e.g. index.fr.html) ──
+      if (!shouldIncludeLayout(relPath, options)) continue;
 
       let content;
       try { content = fs.readFileSync(absPath, 'utf8'); }
@@ -2140,12 +2242,14 @@ function replaceDrupalComponentsInLayouts(results, layoutsDir, logs) {
     }
   }
 
-  walk(layoutsDir);
+  walk(layoutsDir, '');
 
   // ── Second pass: wire block/component refs INSIDE region & paragraph partials ──────────────
   // Region and paragraph partials were written with raw Drupal block HTML.
   // Re-walk only those container partial dirs, applying block-only rules so
   // region partials end up referencing block partials (but never region-in-region).
+  // For multilingual: only process partials that belong to this language.
+  const langSuffix = options.langSuffix || '';
   const blockAndComponentRules = rules.filter(r => r.type === 'block' || r.type === 'component');
   if (blockAndComponentRules.length > 0) {
     const containerDirs = ['regions', 'paragraphs']
@@ -2156,6 +2260,15 @@ function replaceDrupalComponentsInLayouts(results, layoutsDir, logs) {
       let partialFiles;
       try { partialFiles = fs.readdirSync(containerDir).filter(f => f.endsWith('.html')); }
       catch { continue; }
+
+      // Filter partial files to only process those belonging to the current language
+      if (langSuffix) {
+        partialFiles = partialFiles.filter(f => f.endsWith(`-${langSuffix}.html`));
+      } else {
+        // Default language: skip lang-suffixed partials (they belong to other languages)
+        const langSuffixPattern = /-[a-z]{2}\.html$/;
+        partialFiles = partialFiles.filter(f => !langSuffixPattern.test(f));
+      }
 
       for (const fname of partialFiles) {
         const absPath = path.join(containerDir, fname);
@@ -2243,7 +2356,10 @@ function replaceDrupalComponentsInLayouts(results, layoutsDir, logs) {
   // Using ALL rules means region divs are replaced by region partial refs (outermost wins via
   // deduplication), creating the proper chain: header.html → region--header.html → block--X.html
   if (rules.length > 0) {
-    const staticPartials = ['header.html', 'footer.html']
+    // Use configurable header/footer files — for non-default languages, wire into
+    // header-{lang}.html and footer-{lang}.html instead of the default files.
+    const headerFooterFiles = options.headerFooterFiles || ['header.html', 'footer.html'];
+    const staticPartials = headerFooterFiles
       .map(f => path.join(partialsDir, f))
       .filter(f => { try { return fs.statSync(f).isFile(); } catch { return false; } });
 

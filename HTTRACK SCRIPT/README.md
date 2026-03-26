@@ -6,7 +6,7 @@ This site is based on Vue JavaScript Framework.
 
 Read the [Edison Lite documentation](https://docs.platforms.pfizer/edison/docs).
 
-## Project setup
+## Project setup guide
 ```
 npm install
 ```
