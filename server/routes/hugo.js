@@ -611,7 +611,7 @@ function slugToTypeName(slug) {
  * This gives every page its own isolated layout file, matching
  * the reference site pattern exactly.
  */
-function buildContentFrontMatter({ slug, title, description, abstract, bodyClass, bodyId, pageCSS, pageJS, tabMenu, carousel, banner, breadcrumb, pageLang, isMultilingual, defaultLang }) {
+function buildContentFrontMatter({ slug, title, description, abstract, bodyClass, bodyId, pageCSS, pagePrintCSS, pageJS, tabMenu, carousel, banner, breadcrumb, pageLang, isMultilingual, defaultLang }) {
   let typeSlug, layoutName;
   if (isMultilingual && pageLang && pageLang !== (defaultLang || 'en')) {
     // Non-default language: type = "<lang>/<slugToTypeName(slug)>"
@@ -1257,7 +1257,7 @@ router.post('/convert', (req, res) => {
         const langHtml = fs.readFileSync(langHomeIndexPath, 'utf8');
         const langMeta = extractMetadata(langHtml, domain);
         const { bodyClass: langBodyClass, bodyId: langBodyId } = extractBodyAttributes(langHtml);
-        const langCSS = extractPageCSS(langHtml);
+        const { screen: langCSS, print: langPrintCSS } = extractPageCSS(langHtml);        
         const langJS  = extractPageHeadJS(langHtml);
         const langPageTitle = langMeta.pageTitle || langMeta.title || domain;
 
@@ -1268,6 +1268,10 @@ router.post('/convert', (req, res) => {
         if (langCSS.length) {
           langFm += `pageCSS:\n`;
           for (const css of langCSS) langFm += `  - '${yml(css)}'\n`;
+        }
+        if (langPrintCSS && langPrintCSS.length) {
+          langFm += `pagePrintCSS:\n`;
+          for (const css of langPrintCSS) langFm += `  - '${yml(css)}'\n`;
         }
         if (langJS.length) {
           langFm += `pageJS:\n`;
