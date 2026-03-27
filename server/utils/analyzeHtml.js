@@ -148,7 +148,7 @@ function normalizeHtml(html) {
  *   fileReports         : [ { file, semanticTags, nodeTypes } ]
  * }
  */
-export { writeNodePartials, writeStructuralPartials, extractDrupalComponents, writeDrupalComponentPartials };
+export { writeNodePartials, writeStructuralPartials, extractDrupalComponents, writeDrupalComponentPartials, extractMenuData };
 
 export function analyzeHtmlFiles(siteSrcDir) {
   const fileReports         = [];
@@ -240,6 +240,7 @@ export function analyzeHtmlFiles(siteSrcDir) {
 function replaceNodeBlocksInLayouts(layoutsDir, nodeType, canonicalHtml, partialRef, logs) {
   const norm = normalizeHtml(canonicalHtml);
   const nodesPartialDir = path.resolve(layoutsDir, 'partials', 'nodes');
+  const partialsDir = path.resolve(layoutsDir, 'partials');
 
   function walk(dir) {
     let entries;
@@ -250,8 +251,9 @@ function replaceNodeBlocksInLayouts(layoutsDir, nodeType, canonicalHtml, partial
       const absPath = path.join(dir, entry.name);
 
       if (entry.isDirectory()) {
-        // ── Skip the nodes partial directory entirely ──
-        if (path.resolve(absPath) === nodesPartialDir) continue;
+        // Skip the nodes partial directory and all shared chrome partials
+        const resolved = path.resolve(absPath);
+        if (resolved === nodesPartialDir || resolved === partialsDir) continue;
         walk(absPath);
         continue;
       }
@@ -876,6 +878,8 @@ function extractBalancedStructuralBlock(html, tag, startIndex, openTagLength) {
 function replaceStructuralBlocksInLayouts(layoutsDir, type, canonicalHtml, partialRef, logs) {
   const structuresPartialDir = path.resolve(layoutsDir, 'partials', 'structures');
   const nodesPartialDir = path.resolve(layoutsDir, 'partials', 'nodes');
+  // Directories that contain shared chrome partials — never replace blocks inside these
+  const partialsDir = path.resolve(layoutsDir, 'partials');
 
   function walk(dir) {
     let entries;
@@ -888,6 +892,10 @@ function replaceStructuralBlocksInLayouts(layoutsDir, type, canonicalHtml, parti
       if (entry.isDirectory()) {
         const resolved = path.resolve(absPath);
         if (resolved === structuresPartialDir || resolved === nodesPartialDir) continue;
+        // Skip the entire partials directory — we must not replace structures
+        // inside header.html, footer.html, or other shared chrome partials.
+        // Structural block replacement only applies to page-specific layouts.
+        if (resolved === partialsDir) continue;
         walk(absPath);
         continue;
       }
