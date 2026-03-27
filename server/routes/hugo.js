@@ -649,7 +649,7 @@ function extractBodyWrappers(html) {
  *
  * Individual page layout files only need to define the "main" block.
  */
-function buildBaseof(html) {
+function buildBaseof(html, isMultilingual) {
   const dir     = extractAttr(html, 'html', 'dir') || 'ltr';
   const skipLink = extractSkipLink(html);
   const { open: wrapOpen, close: wrapClose } = extractBodyWrappers(html);
@@ -662,15 +662,42 @@ function buildBaseof(html) {
     ? `{{ block "scripts" . }}\n${scripts}\n{{ end }}`
     : `{{ block "scripts" . }}{{ end }}`;
 
+  // For multilingual sites, use language-specific partials with fallback
+  let headPartial, headerPartial, footerPartial;
+  if (isMultilingual) {
+    headPartial = `{{ $headPartial := printf "head-%s.html" .Language.Lang }}
+  {{ if templates.Exists (printf "partials/%s" $headPartial) }}
+    {{ partial $headPartial . }}
+  {{ else }}
+    {{ partial "head.html" . }}
+  {{ end }}`;
+    headerPartial = `{{ $headerPartial := printf "header-%s.html" .Language.Lang }}
+  {{ if templates.Exists (printf "partials/%s" $headerPartial) }}
+    {{ partial $headerPartial . }}
+  {{ else }}
+    {{ partial "header.html" . }}
+  {{ end }}`;
+    footerPartial = `{{ $footerPartial := printf "footer-%s.html" .Language.Lang }}
+  {{ if templates.Exists (printf "partials/%s" $footerPartial) }}
+    {{ partial $footerPartial . }}
+  {{ else }}
+    {{ partial "footer.html" . }}
+  {{ end }}`;
+  } else {
+    headPartial   = '{{ partial "head.html" . }}';
+    headerPartial = '  {{ partial "header.html" . }}';
+    footerPartial = '  {{ partial "footer.html" . }}';
+  }
+
   return `<!DOCTYPE html>
 <html lang="{{ .Site.Language.Lang | default .Site.LanguageCode }}" dir="${dir}">
 {{ partial "head.html" . }}
 <body{{ with .Params.bodyClass }} class="{{ . }}"{{ end }}{{ with .Params.bodyId }} id="{{ . }}"{{ end }}>${skipLinkLine}
-${wrapOpenLine}  {{ partial "header.html" . }}
+${wrapOpenLine}${headerPartial}
 
   {{ block "main" . }}{{ end }}
 
-  {{ partial "footer.html" . }}
+${footerPartial}
 ${wrapCloseLine}
 ${scriptsBlock}
 </body>
@@ -991,6 +1018,83 @@ function homepagePath(canonicalUrl, domain) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+//  MULTILINGUAL DETECTION
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Get human-readable name for a language code.
+ */
+function getLanguageName(code) {
+  const names = {
+    en: 'English', fr: 'Français', de: 'Deutsch', es: 'Español',
+    it: 'Italiano', pt: 'Português', nl: 'Nederlands', ja: '日本語',
+    zh: '中文', ko: '한국어', ar: 'العربية', ru: 'Русский',
+    pl: 'Polski', sv: 'Svenska', da: 'Dansk', fi: 'Suomi',
+    no: 'Norsk', cs: 'Čeština', hu: 'Magyar', ro: 'Română',
+    el: 'Ελληνικά', tr: 'Türkçe', th: 'ไทย', vi: 'Tiếng Việt',
+  };
+  return names[code] || code.toUpperCase();
+}
+
+/**
+ * Detect languages from sitemap.xml hreflang tags or directory structure.
+ * Returns a Map<langCode, { weight, name }> with ≥ 2 entries,
+ * or null if only one language is found (monolingual site).
+ */
+function detectLanguages(siteSrcDir) {
+  const languages = new Map();
+
+  // 1. Parse sitemap.xml for xhtml:link hreflang tags
+  const sitemapPath = path.join(siteSrcDir, 'sitemap.xml');
+  if (fs.existsSync(sitemapPath)) {
+    try {
+      const xml = fs.readFileSync(sitemapPath, 'utf8');
+      const re = /hreflang=["']([a-zA-Z]{2,3})(?:-[a-zA-Z]+)*["']/gi;
+      let m;
+      while ((m = re.exec(xml)) !== null) {
+        const code = m[1].toLowerCase();
+        if (!languages.has(code)) {
+          languages.set(code, { weight: languages.size + 1, name: getLanguageName(code) });
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  // 2. Fallback — look for language directories that contain index.html
+  //    and whose <html lang> matches the directory name.
+  if (languages.size <= 1) {
+    const candidates = ['fr','de','es','it','pt','nl','ja','zh','ko','ar','ru','pl','sv','da','fi','no','cs','hu','ro','el','tr','th','vi'];
+    for (const lang of candidates) {
+      const idx = path.join(siteSrcDir, lang, 'index.html');
+      if (!fs.existsSync(idx)) continue;
+      try {
+        const html = fs.readFileSync(idx, 'utf8');
+        const lm = html.match(/<html[^>]+lang=["']([^"']+)["']/i);
+        if (lm && lm[1].toLowerCase().startsWith(lang)) {
+          if (!languages.has('en')) languages.set('en', { weight: 1, name: 'English' });
+          if (!languages.has(lang)) languages.set(lang, { weight: languages.size + 1, name: getLanguageName(lang) });
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
+  return languages.size > 1 ? languages : null;
+}
+
+/**
+ * Determine the language of a page from its slug.
+ * Returns { lang, cleanSlug } where cleanSlug has the lang prefix removed.
+ */
+function getPageLanguage(slug, detectedLanguages, defaultLang) {
+  if (!detectedLanguages) return { lang: defaultLang, cleanSlug: slug };
+  const first = slug.split('/')[0];
+  if (first !== defaultLang && detectedLanguages.has(first)) {
+    return { lang: first, cleanSlug: slug.slice(first.length + 1) };
+  }
+  return { lang: defaultLang, cleanSlug: slug };
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  CONVERT ROUTE
 // ═══════════════════════════════════════════════════════════════════
 
@@ -1272,10 +1376,48 @@ router.post('/convert', (req, res) => {
     fs.writeFileSync(path.join(partialsDir, 'footer.html'), processHeaderPartial(rawFooter) + '\n', 'utf8');
     logs.push(`  ✓ layouts/partials/footer.html`);
 
+    // ── Step 5b: Build language-specific partials for multilingual sites ──
+    if (isMultilingual) {
+      logs.push(`\nBuilding language-specific partials…`);
+      for (const [lang] of detectedLanguages) {
+        if (lang === defaultLang) continue;
+
+        const langHomePath = path.join(siteSrcDir, lang, 'index.html');
+        if (!fs.existsSync(langHomePath)) {
+          logs.push(`  ⚠ No homepage for ${lang} — skipping language-specific partials`);
+          continue;
+        }
+
+        const langHtml = fs.readFileSync(langHomePath, 'utf8');
+
+        // Build sample HTMLs for this language (homepage + up to 4 inner pages)
+        const langSampleHtmls = [langHtml];
+        const langPages = pages.filter(p => p.slug.startsWith(lang + '/'));
+        for (const page of langPages.slice(0, 4)) {
+          try { langSampleHtmls.push(fs.readFileSync(page.htmlPath, 'utf8')); } catch { /* ignore */ }
+        }
+
+        // head-{lang}.html
+        const langHead = extractTag(langHtml, 'head') || '<head></head>';
+        fs.writeFileSync(path.join(partialsDir, `head-${lang}.html`), processHeadPartial(langHead) + '\n', 'utf8');
+        logs.push(`  ✓ layouts/partials/head-${lang}.html`);
+
+        // header-{lang}.html
+        const langHeader = detectSharedPartial('header', langSampleHtmls) || '<header></header>';
+        fs.writeFileSync(path.join(partialsDir, `header-${lang}.html`), processHeaderPartial(langHeader, lang) + '\n', 'utf8');
+        logs.push(`  ✓ layouts/partials/header-${lang}.html`);
+
+        // footer-{lang}.html
+        const langFooter = detectSharedPartial('footer', langSampleHtmls) || '<footer></footer>';
+        fs.writeFileSync(path.join(partialsDir, `footer-${lang}.html`), langFooter + '\n', 'utf8');
+        logs.push(`  ✓ layouts/partials/footer-${lang}.html`);
+      }
+    }
+
     // ── Step 6: _default layouts ──────────────────────────────────
     logs.push(`\nBuilding _default layouts…`);
 
-    fs.writeFileSync(path.join(defaultDir, 'baseof.html'), buildBaseof(srcHtml), 'utf8');
+    fs.writeFileSync(path.join(defaultDir, 'baseof.html'), buildBaseof(srcHtml, isMultilingual), 'utf8');
     logs.push(`  ✓ layouts/_default/baseof.html  (HTML shell with partials)`);
 
     fs.writeFileSync(path.join(defaultDir, 'single.html'),
@@ -1313,6 +1455,13 @@ Sitemap: {{ .Site.BaseURL }}sitemap.xml
     const contentDir = path.join(hugoSiteDir, 'content');
     fs.mkdirSync(contentDir, { recursive: true });
 
+    // For multilingual, create per-language content directories
+    if (isMultilingual) {
+      for (const [lang] of detectedLanguages) {
+        fs.mkdirSync(path.join(contentDir, lang), { recursive: true });
+      }
+    }
+
        // ── Step 8: Homepage ──────────────────────────────────────────
     logs.push(`\nBuilding homepage…`);
 
@@ -1345,20 +1494,83 @@ Sitemap: {{ .Site.BaseURL }}sitemap.xml
       homeFm += `aliases:\n  - '/${subPathCheck}'\n`;
     }
     homeFm += `---\n`;
-    fs.writeFileSync(path.join(contentDir, '_index.md'), homeFm, 'utf8');
-    logs.push(`  ✓ content/_index.md`);
 
     const homeMainContent  = smartExtractMainContent(srcHtml);
     const subPath          = homepagePath(meta.canonicalUrl, domain);
 
-    if (!subPath) {
-      fs.writeFileSync(path.join(layoutsDir, 'index.html'), buildPageLayout(homeMainContent), 'utf8');
-      logs.push(`  ✓ layouts/index.html  (homepage at /)`);
+    if (isMultilingual) {
+      // ─── Multilingual homepage handling ───
+      // Default language homepage → content/<defaultLang>/_index.md
+      const defaultContentDir = path.join(contentDir, defaultLang);
+      fs.mkdirSync(defaultContentDir, { recursive: true });
+      fs.writeFileSync(path.join(defaultContentDir, '_index.md'), homeFm, 'utf8');
+      logs.push(`  ✓ content/${defaultLang}/_index.md`);
+
+      // Default language homepage layout
+      if (!subPath) {
+        fs.writeFileSync(path.join(layoutsDir, 'index.html'), buildPageLayout(homeMainContent), 'utf8');
+        logs.push(`  ✓ layouts/index.html  (${defaultLang} homepage at /)`);
+      } else {
+        const subDir = path.join(layoutsDir, subPath);
+        fs.mkdirSync(subDir, { recursive: true });
+        fs.writeFileSync(path.join(subDir, 'index.html'), buildPageLayout(homeMainContent), 'utf8');
+        logs.push(`  ✓ layouts/${subPath}/index.html  (${defaultLang} homepage at /${subPath}/)`);
+      }
+
+      // Other language homepages
+      for (const [lang] of detectedLanguages) {
+        if (lang === defaultLang) continue;
+
+        const langHomeIndexPath = path.join(siteSrcDir, lang, 'index.html');
+        if (!fs.existsSync(langHomeIndexPath)) {
+          logs.push(`  ⚠ No homepage found for language: ${lang}`);
+          continue;
+        }
+
+        const langHtml = fs.readFileSync(langHomeIndexPath, 'utf8');
+        const langMeta = extractMetadata(langHtml, domain);
+        const { bodyClass: langBodyClass, bodyId: langBodyId } = extractBodyAttributes(langHtml);
+        const langCSS = extractPageCSS(langHtml);
+        const langJS  = extractPageHeadJS(langHtml);
+        const langPageTitle = langMeta.pageTitle || langMeta.title || domain;
+
+        let langFm = `---\ntitle: '${yml(langPageTitle)}'\ndraft: false\n`;
+        if (langMeta.description) langFm += `description: '${yml(langMeta.description)}'\n`;
+        if (langBodyClass)        langFm += `bodyClass: '${yml(langBodyClass)}'\n`;
+        if (langBodyId)           langFm += `bodyId: '${yml(langBodyId)}'\n`;
+        if (langCSS.length) {
+          langFm += `pageCSS:\n`;
+          for (const css of langCSS) langFm += `  - '${yml(css)}'\n`;
+        }
+        if (langJS.length) {
+          langFm += `pageJS:\n`;
+          for (const js of langJS) langFm += `  - '${yml(js)}'\n`;
+        }
+        langFm += `---\n`;
+
+        const langContentDir = path.join(contentDir, lang);
+        fs.mkdirSync(langContentDir, { recursive: true });
+        fs.writeFileSync(path.join(langContentDir, '_index.md'), langFm, 'utf8');
+        logs.push(`  ✓ content/${lang}/_index.md`);
+
+        const langMainContent = smartExtractMainContent(langHtml);
+        fs.writeFileSync(path.join(layoutsDir, `index.${lang}.html`), buildPageLayout(langMainContent), 'utf8');
+        logs.push(`  ✓ layouts/index.${lang}.html  (${lang} homepage at /${lang}/)`);
+      }
     } else {
-      const subDir = path.join(layoutsDir, subPath);
-      fs.mkdirSync(subDir, { recursive: true });
-      fs.writeFileSync(path.join(subDir, 'index.html'), buildPageLayout(homeMainContent), 'utf8');
-      logs.push(`  ✓ layouts/${subPath}/index.html  (homepage at /${subPath}/)`);
+      // ─── Monolingual homepage handling (original logic) ───
+      fs.writeFileSync(path.join(contentDir, '_index.md'), homeFm, 'utf8');
+      logs.push(`  ✓ content/_index.md`);
+
+      if (!subPath) {
+        fs.writeFileSync(path.join(layoutsDir, 'index.html'), buildPageLayout(homeMainContent), 'utf8');
+        logs.push(`  ✓ layouts/index.html  (homepage at /)`);
+      } else {
+        const subDir = path.join(layoutsDir, subPath);
+        fs.mkdirSync(subDir, { recursive: true });
+        fs.writeFileSync(path.join(subDir, 'index.html'), buildPageLayout(homeMainContent), 'utf8');
+        logs.push(`  ✓ layouts/${subPath}/index.html  (homepage at /${subPath}/)`);
+      }
     }
 
     // ── Step 9: Inner pages ───────────────────────────────────────
@@ -1369,6 +1581,19 @@ Sitemap: {{ .Site.BaseURL }}sitemap.xml
     for (const page of pages) {
       const { slug, htmlPath } = page;
       pageWeight++;
+
+      // For multilingual, detect page language and get clean slug
+      let pageLang = defaultLang;
+      let cleanSlug = slug;
+
+      if (isMultilingual) {
+        const langInfo = getPageLanguage(slug, detectedLanguages, defaultLang);
+        pageLang = langInfo.lang;
+        cleanSlug = langInfo.cleanSlug;
+
+        // Skip language homepages (they were handled in Step 8)
+        if (cleanSlug === '') continue;
+      }
 
       let pageHtml = '';
       try { pageHtml = fs.readFileSync(htmlPath, 'utf8'); }
@@ -1382,16 +1607,39 @@ Sitemap: {{ .Site.BaseURL }}sitemap.xml
       const { bodyClass: pageBodyClass, bodyId: pageBodyId } = extractBodyAttributes(pageHtml);
       const { screen: pageCSS, print: pagePrintCSS } = extractPageCSS(pageHtml);
       const pageJS      = extractPageHeadJS(pageHtml);
-      const typeSlug   = slugToTypeName(slug);
-      const layoutName = slug.split('/').pop();
 
-      const contentSlugDir = path.join(contentDir, ...slug.split('/'));
+      // Compute type and layout names based on multilingual context
+      let typeSlug, layoutName;
+      if (isMultilingual && pageLang !== defaultLang) {
+        // Non-default language: type = "<lang>/<cleanTypeSlug>"
+        // Layout goes in layouts/<lang>/<cleanTypeSlug>/
+        const cleanTypeSlug = slugToTypeName(cleanSlug);
+        typeSlug = `${pageLang}/${cleanTypeSlug}`;
+        layoutName = cleanSlug.split('/').pop() || cleanSlug;
+      } else if (isMultilingual) {
+        // Default language in a multilingual site
+        typeSlug = slugToTypeName(cleanSlug);
+        layoutName = cleanSlug.split('/').pop();
+      } else {
+        // Monolingual site (original logic)
+        typeSlug = slugToTypeName(slug);
+        layoutName = slug.split('/').pop();
+      }
+
+      // Content directory: for multilingual, content goes under content/<lang>/
+      const contentSlugParts = isMultilingual
+        ? [pageLang, ...cleanSlug.split('/')]
+        : slug.split('/');
+      const contentSlugDir = path.join(contentDir, ...contentSlugParts);
       fs.mkdirSync(contentSlugDir, { recursive: true });
       const contentFile = path.join(contentSlugDir, '_index.md');
+
+      // Use cleanSlug for front matter in multilingual mode
+      const fmSlug = isMultilingual ? cleanSlug : slug;
       fs.writeFileSync(
         contentFile,
         buildContentFrontMatter({
-          slug,
+          slug:        fmSlug,
           title:       pageMeta.pageTitle || pageMeta.title,
           description: pageMeta.description,
           abstract:    pageMeta.abstract,
@@ -1405,16 +1653,19 @@ Sitemap: {{ .Site.BaseURL }}sitemap.xml
         'utf8'
       );
 
-      const layoutTypeDir = path.join(layoutsDir, typeSlug);
+      // Layout directory: mirrors content structure
+      const layoutTypeDir = path.join(layoutsDir, ...typeSlug.split('/'));
       fs.mkdirSync(layoutTypeDir, { recursive: true });
       const layoutFile = path.join(layoutTypeDir, `${layoutName}.html`);
       fs.writeFileSync(layoutFile, buildPageLayout(mainContent), 'utf8');
 
-      const relContent = `content/${slug}/_index.md`;
+      const relContentParts = isMultilingual
+        ? `content/${pageLang}/${cleanSlug}/_index.md`
+        : `content/${slug}/_index.md`;
       const relLayout  = `layouts/${typeSlug}/${layoutName}.html`;
 
-      logs.push(`  ✓ [${slug}]`);
-      logs.push(`       content : ${relContent}`);
+      logs.push(`  ✓ [${slug}]  (lang: ${pageLang})`);
+      logs.push(`       content : ${relContentParts}`);
       logs.push(`       layout  : ${relLayout}`);
       logs.push(`       title   : ${pageMeta.pageTitle || pageMeta.title || '(none)'}`);
 
@@ -1422,7 +1673,7 @@ Sitemap: {{ .Site.BaseURL }}sitemap.xml
         slug,
         title:       pageMeta.pageTitle || pageMeta.title || slug,
         description: pageMeta.description || '',
-        contentFile: relContent,
+        contentFile: relContentParts,
         layoutFile:  relLayout,
         typeSlug,
         layoutName,
@@ -1444,29 +1695,103 @@ Sitemap: {{ .Site.BaseURL }}sitemap.xml
     let dynamicPartials = { nodePartials: [], structuralPartials: [], drupalComponents: null };
 
     try {
-      // 1. node--type-* blocks → partials/nodes/node--type-X.html
-      //    AND replaces matching blocks in all layout files
-      const analysis = analyzeHtmlFiles(siteSrcDir);
-      if (Object.keys(analysis.nodeTypes).length > 0) {
-        logs.push(`\n  Node types found: ${Object.keys(analysis.nodeTypes).join(', ')}`);
-        dynamicPartials.nodePartials = writeNodePartials(analysis.nodeTypes, layoutsDir, logs);
+      if (isMultilingual) {
+        // ═════════════════════════════════════════════════════════════
+        //  MULTILINGUAL: Analyse and create partials PER LANGUAGE
+        //  This prevents content from one language leaking into another.
+        // ═════════════════════════════════════════════════════════════
+        const nonDefaultLangs = [];
+        for (const [lang] of detectedLanguages) {
+          if (lang !== defaultLang) nonDefaultLangs.push(lang);
+        }
+
+        // ── Step 11a: Default language analysis & partials ──────────
+        logs.push(`\n  Default language (${defaultLang}) dynamic partials…`);
+        const defaultFilter = { excludePrefixes: nonDefaultLangs };
+        const defaultLayoutFilter = { excludeLayoutPrefixes: nonDefaultLangs };
+
+        // 1. node--type-* partials (default language only)
+        const analysis = analyzeHtmlFiles(siteSrcDir, defaultFilter);
+        if (Object.keys(analysis.nodeTypes).length > 0) {
+          logs.push(`\n  Node types found (${defaultLang}): ${Object.keys(analysis.nodeTypes).join(', ')}`);
+          dynamicPartials.nodePartials = writeNodePartials(analysis.nodeTypes, layoutsDir, logs, defaultLayoutFilter);
+        } else {
+          logs.push(`  No node--type-* blocks detected (${defaultLang})`);
+        }
+
+        // 2. Structural patterns (default language only)
+        dynamicPartials.structuralPartials = writeStructuralPartials(
+          siteSrcDir, layoutsDir, logs,
+          { ...defaultFilter, ...defaultLayoutFilter }
+        );
+        if (dynamicPartials.structuralPartials.length === 0) {
+          logs.push(`  No shared structural patterns detected (${defaultLang})`);
+        }
+
+        // 3. Drupal components (default language only → wire into default layouts + header/footer)
+        const drupalComponents = extractDrupalComponents(siteSrcDir, defaultFilter);
+        const componentResult = writeDrupalComponentPartials(drupalComponents, layoutsDir, logs, {
+          ...defaultLayoutFilter,
+          headerFooterFiles: ['header.html', 'footer.html'],
+        });
+        dynamicPartials.drupalComponents = componentResult;
+
+        // ── Step 11b: Non-default language partials ─────────────────
+        for (const lang of nonDefaultLangs) {
+          logs.push(`\n  Language (${lang}) dynamic partials…`);
+          const langFilter = { includePrefix: lang };
+          const langLayoutFilter = { includeLayoutPrefix: lang };
+
+          // 1. node--type-* partials for this language
+          const langAnalysis = analyzeHtmlFiles(siteSrcDir, langFilter);
+          if (Object.keys(langAnalysis.nodeTypes).length > 0) {
+            logs.push(`\n  Node types found (${lang}): ${Object.keys(langAnalysis.nodeTypes).join(', ')}`);
+            writeNodePartials(langAnalysis.nodeTypes, layoutsDir, logs, { langSuffix: lang, ...langLayoutFilter });
+          }
+
+          // 2. Structural patterns for this language
+          writeStructuralPartials(siteSrcDir, layoutsDir, logs, {
+            ...langFilter, langSuffix: lang, ...langLayoutFilter,
+          });
+
+          // 3. Drupal components for this language → wire into lang layouts + header-{lang}/footer-{lang}
+          const langComponents = extractDrupalComponents(siteSrcDir, langFilter);
+          writeDrupalComponentPartials(langComponents, layoutsDir, logs, {
+            langSuffix: lang,
+            ...langLayoutFilter,
+            headerFooterFiles: [`header-${lang}.html`, `footer-${lang}.html`],
+          });
+        }
+
       } else {
-        logs.push(`  No node--type-* blocks detected`);
-      }
+        // ═════════════════════════════════════════════════════════════
+        //  MONOLINGUAL: Original logic — scan everything at once
+        // ═════════════════════════════════════════════════════════════
 
-      // 2. Structural patterns (breadcrumb, tabs, carousel, accordion, menu, sidebar, banner)
-      //    → partials/structures/X.html  AND replaces in layouts
-      dynamicPartials.structuralPartials = writeStructuralPartials(siteSrcDir, layoutsDir, logs);
-      if (dynamicPartials.structuralPartials.length === 0) {
-        logs.push(`  No shared structural patterns detected`);
-      }
+        // 1. node--type-* blocks → partials/nodes/node--type-X.html
+        //    AND replaces matching blocks in all layout files
+        const analysis = analyzeHtmlFiles(siteSrcDir);
+        if (Object.keys(analysis.nodeTypes).length > 0) {
+          logs.push(`\n  Node types found: ${Object.keys(analysis.nodeTypes).join(', ')}`);
+          dynamicPartials.nodePartials = writeNodePartials(analysis.nodeTypes, layoutsDir, logs);
+        } else {
+          logs.push(`  No node--type-* blocks detected`);
+        }
 
-      // 3. Drupal paragraphs, blocks, regions, components
-      //    → partials/{paragraphs,blocks,regions,components}/X.html
-      //    AND replaces matching HTML in all layout files
-      const drupalComponents = extractDrupalComponents(siteSrcDir);
-      const componentResult = writeDrupalComponentPartials(drupalComponents, layoutsDir, logs);
-      dynamicPartials.drupalComponents = componentResult;
+        // 2. Structural patterns (breadcrumb, tabs, carousel, accordion, menu, sidebar, banner)
+        //    → partials/structures/X.html  AND replaces in layouts
+        dynamicPartials.structuralPartials = writeStructuralPartials(siteSrcDir, layoutsDir, logs);
+        if (dynamicPartials.structuralPartials.length === 0) {
+          logs.push(`  No shared structural patterns detected`);
+        }
+
+        // 3. Drupal paragraphs, blocks, regions, components
+        //    → partials/{paragraphs,blocks,regions,components}/X.html
+        //    AND replaces matching HTML in all layout files
+        const drupalComponents = extractDrupalComponents(siteSrcDir);
+        const componentResult = writeDrupalComponentPartials(drupalComponents, layoutsDir, logs);
+        dynamicPartials.drupalComponents = componentResult;
+      }
 
     } catch (err) {
       logs.push(`  ⚠ Dynamic partial discovery warning: ${err.message}`);
@@ -1498,6 +1823,8 @@ Sitemap: {{ .Site.BaseURL }}sitemap.xml
       siteTitle:      meta.title || domain,
       description:    meta.description,
       keywords:       meta.keywords,
+      isMultilingual,
+      languages:      isMultilingual ? Object.fromEntries(detectedLanguages) : null,
       copiedFolders,
       skippedFolders,
       pageCount:      convertedPages.length + 1,
