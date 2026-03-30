@@ -1585,7 +1585,7 @@ Sitemap: {{ .Site.BaseURL }}sitemap.xml
         const langHtml = fs.readFileSync(langHomeIndexPath, 'utf8');
         const langMeta = extractMetadata(langHtml, domain);
         const { bodyClass: langBodyClass, bodyId: langBodyId } = extractBodyAttributes(langHtml);
-        const langCSS = extractPageCSS(langHtml);
+        const { screen: langCSS, print: langPrintCSS } = extractPageCSS(langHtml);        
         const langJS  = extractPageHeadJS(langHtml);
         const langBanner     = extractBannerData(langHtml);
         const langBreadcrumb = extractBreadcrumbData(langHtml);
@@ -1598,6 +1598,10 @@ Sitemap: {{ .Site.BaseURL }}sitemap.xml
         if (langCSS.length) {
           langFm += `pageCSS:\n`;
           for (const css of langCSS) langFm += `  - '${yml(css)}'\n`;
+        }
+        if (langPrintCSS && langPrintCSS.length) {
+          langFm += `pagePrintCSS:\n`;
+          for (const css of langPrintCSS) langFm += `  - '${yml(css)}'\n`;
         }
         if (langJS.length) {
           langFm += `pageJS:\n`;
