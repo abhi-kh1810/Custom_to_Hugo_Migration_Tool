@@ -13,6 +13,7 @@ export class HtmlToHugoConverter {
     this.siteDir = siteDir; // Downloaded site directory
     this.projectId = projectId;
     this.hugoSiteDir = path.join(path.dirname(siteDir), `hugo-${path.basename(siteDir)}`);
+    this.homepageRedirect = null; // Will hold { redirectFrom, redirectTo } if detected
   }
 
   /**
@@ -25,6 +26,12 @@ export class HtmlToHugoConverter {
 
       // Find all HTML files
       const htmlFiles = this.findHtmlFiles(this.siteDir);
+
+      // Detect if the root index.html is a redirect (e.g., HTTrack "Page has moved")
+      this.homepageRedirect = this.detectHomepageRedirect(htmlFiles);
+      if (this.homepageRedirect) {
+        console.log(`🔀 Homepage redirect detected: / → /${this.homepageRedirect.redirectTo}`);
+      }
 
       // Detect site title from the homepage before converting pages
       this.siteTitle = this.detectSiteTitle(htmlFiles);
@@ -138,6 +145,53 @@ draft: false
   }
 
   /**
+   * Detect if the root index.html is an HTTrack redirect page.
+   * HTTrack creates these when the original site redirects the homepage
+   * (e.g., www.eczee.fr → www.eczee.fr/frontpage).
+   * Returns { redirectFrom: 'index.html', redirectTo: 'frontpage' } or null.
+   */
+  detectHomepageRedirect(htmlFiles) {
+    const rootIndex = htmlFiles.find(
+      (f) => path.relative(this.siteDir, f) === 'index.html'
+    );
+    if (!rootIndex) return null;
+
+    try {
+      const html = fs.readFileSync(rootIndex, 'utf-8');
+      const dom = new JSDOM(html);
+      const doc = dom.window.document;
+
+      // Check for <meta http-equiv="Refresh" content="0; URL=...">
+      const metaRefresh = doc.querySelector('meta[http-equiv="Refresh"], meta[http-equiv="refresh"]');
+      if (!metaRefresh) return null;
+
+      const contentAttr = metaRefresh.getAttribute('content') || '';
+      const urlMatch = contentAttr.match(/URL=([^"\s]+)/i);
+      if (!urlMatch) return null;
+
+      // Resolve the redirect target relative to site root
+      let target = urlMatch[1].replace(/\.html$/, ''); // e.g., "frontpage.html" → "frontpage"
+
+      // Verify the target directory/file actually exists in the site
+      const targetIndex = htmlFiles.find((f) => {
+        const rel = path.relative(this.siteDir, f);
+        return rel === `${target}/index.html` || rel === `${target}.html`;
+      });
+
+      if (!targetIndex) return null;
+
+      console.log(`📋 Root index.html is an HTTrack redirect → "${target}"`);
+      return {
+        redirectFrom: 'index.html',
+        redirectTo: target,
+        targetFile: targetIndex,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Find all HTML files in directory
    */
   findHtmlFiles(dir, fileList = []) {
@@ -158,6 +212,14 @@ draft: false
   }
 
  async convertHtmlToMarkdown(htmlFile) {
+  const relativePath = path.relative(this.siteDir, htmlFile);
+
+  // Skip the HTTrack redirect index.html (it has no real content)
+  if (this.homepageRedirect && relativePath === 'index.html') {
+    console.log(`⏭ Skipping redirect page: ${relativePath}`);
+    return;
+  }
+
   const html = fs.readFileSync(htmlFile, 'utf-8');
   const dom = new JSDOM(html);
   const document = dom.window.document;
@@ -205,21 +267,35 @@ draft: false
   const markdown = `${yamlContent}\n${content}`;
 
   // Determine output path
-  const relativePath = path.relative(this.siteDir, htmlFile);
-  const outputDir = path.join(
-    this.hugoSiteDir,
-    'content',
-    path.dirname(relativePath)
-  );
+  // If this is the redirect target, promote it to the root _index.md (Hugo homepage)
+  const isRedirectTarget = this.homepageRedirect &&
+    path.resolve(htmlFile) === path.resolve(this.homepageRedirect.targetFile);
+
+  let outputDir, outputFile;
+  if (isRedirectTarget) {
+    // This page becomes the Hugo homepage (content/_index.md)
+    outputDir = path.join(this.hugoSiteDir, 'content');
+    outputFile = path.join(outputDir, '_index.md');
+    // Add alias so the old URL (e.g., /frontpage) still resolves
+    const aliasPath = '/' + this.homepageRedirect.redirectTo;
+    const aliasLine = `aliases:\n  - "${aliasPath}"\n`;
+    markdown = markdown.replace(/^(---\n)/, `$1${aliasLine}`);
+    console.log(`🏠 Promoted ${relativePath} → content/_index.md (homepage) with alias ${aliasPath}`);
+  } else {
+    outputDir = path.join(
+      this.hugoSiteDir,
+      'content',
+      path.dirname(relativePath)
+    );
+    outputFile = path.join(
+      outputDir,
+      path.basename(htmlFile, '.html') === 'index' 
+        ? '_index.md' 
+        : path.basename(htmlFile, '.html') + '.md'
+    );
+  }
   
   fs.mkdirSync(outputDir, { recursive: true });
-  
-  const outputFile = path.join(
-    outputDir,
-    path.basename(htmlFile, '.html') === 'index' 
-      ? '_index.md' 
-      : path.basename(htmlFile, '.html') + '.md'
-  );
 
   fs.writeFileSync(outputFile, markdown);
   console.log(`✓ Created ${path.relative(this.hugoSiteDir, outputFile)}`);
@@ -232,6 +308,23 @@ draft: false
    * Falls back to the directory basename.
    */
   detectSiteTitle(htmlFiles) {
+    // If there's a homepage redirect, use the redirect target for the site title
+    if (this.homepageRedirect) {
+      const targetFile = this.homepageRedirect.targetFile;
+      if (targetFile) {
+        try {
+          const html = fs.readFileSync(targetFile, 'utf-8');
+          const dom = new JSDOM(html);
+          const titleEl = dom.window.document.querySelector('title');
+          if (titleEl) {
+            const raw = titleEl.textContent.trim();
+            if (raw.includes(' | ')) return raw.split(' | ').pop().trim();
+            return raw;
+          }
+        } catch { /* fall through */ }
+      }
+    }
+
     // Prefer root index.html as the source of truth for the site title
     const homeCandidates = htmlFiles.filter(
       (f) => path.relative(this.siteDir, f) === 'index.html'

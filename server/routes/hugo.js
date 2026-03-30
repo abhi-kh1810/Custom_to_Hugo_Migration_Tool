@@ -691,7 +691,19 @@ function buildBaseof(html, isMultilingual) {
     footerPartial = '  {{ partial "footer.html" . }}';
   }
 
-  return `<!DOCTYPE html>
+  return `{{- if .Params.redirectTo -}}
+<!DOCTYPE html>
+<html>
+<head>
+  <meta http-equiv="refresh" content="0; url={{ .Params.redirectTo }}">
+  <link rel="canonical" href="{{ .Params.redirectTo }}">
+</head>
+<body>
+  <p>Redirecting to <a href="{{ .Params.redirectTo }}">{{ .Params.redirectTo }}</a>\u2026</p>
+</body>
+</html>
+{{- else -}}
+<!DOCTYPE html>
 <html lang="{{ .Site.Language.Lang | default .Site.LanguageCode }}" dir="${dir}">
 {{ partial "head.html" . }}
 <body{{ with .Params.bodyClass }} class="{{ . }}"{{ end }}{{ with .Params.bodyId }} id="{{ . }}"{{ end }}>${skipLinkLine}
@@ -704,6 +716,7 @@ ${wrapCloseLine}
 ${scriptsBlock}
 </body>
 </html>
+{{- end -}}
 `;
 }
 
@@ -1171,6 +1184,7 @@ router.post('/convert', (req, res) => {
     const indexHtmlPath = path.join(siteSrcDir, 'index.html');
     let srcHtml = '';
     let meta    = { canonicalUrl: `https://${domain}`, lang: 'en', title: domain, description: '', keywords: '', author: '', ogImage: '' };
+    let httrackRedirectPath = null; // e.g. "frontpage" if root index.html redirects to /frontpage
 
     if (fs.existsSync(indexHtmlPath)) {
       srcHtml = fs.readFileSync(indexHtmlPath, 'utf8');
@@ -1181,6 +1195,7 @@ router.post('/convert', (req, res) => {
         const redirectTarget = extractHttrackRedirectTarget(srcHtml);
         logs.push(`⚠ index.html is an HTTrack redirect stub → "${redirectTarget || '(unknown)'}"`);
         if (redirectTarget) {
+          httrackRedirectPath = redirectTarget.replace(/\.html$/, '');
           // Try to find the real homepage: could be "frontpage.html" or "frontpage/index.html"
           const candidates = [
             path.join(siteSrcDir, redirectTarget),
@@ -1365,6 +1380,14 @@ router.post('/convert', (req, res) => {
       try { sampleHtmls.push(fs.readFileSync(page.htmlPath, 'utf8')); } catch { /* ignore */ }
     }
 
+    // ── Step 4b: Detect multilingual setup ────────────────────────
+    const detectedLanguages = detectLanguages(siteSrcDir);
+    const isMultilingual    = detectedLanguages !== null && detectedLanguages.size > 1;
+    const defaultLang       = meta.lang || 'en';
+    if (isMultilingual) {
+      logs.push(`\n🌐 Multilingual site detected: ${[...detectedLanguages.keys()].join(', ')} (default: ${defaultLang})`);
+    }
+
     // ── Step 5: Build shared partials ────────────────────────────
     logs.push(`\nBuilding partials…`);
     const layoutsDir  = path.join(hugoSiteDir, 'layouts');
@@ -1545,8 +1568,10 @@ Sitemap: {{ .Site.BaseURL }}sitemap.xml
 
     // Add aliases for sub-path homepage
     const subPathCheck = homepagePath(meta.canonicalUrl, domain);
-    if (subPathCheck) {
-      homeFm += `aliases:\n  - '/${subPathCheck}'\n`;
+    // Use httrackRedirectPath when the homepage redirects (e.g., / → /frontpage)
+    const effectiveSubPath = subPathCheck || httrackRedirectPath;
+    if (effectiveSubPath) {
+      homeFm += `redirectTo: '/${effectiveSubPath}'\n`;
     }
     homeFm += `---\n`;
 
