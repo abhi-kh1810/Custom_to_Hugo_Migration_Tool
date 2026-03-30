@@ -204,7 +204,7 @@ function normalizeHtml(html) {
  *   fileReports         : [ { file, semanticTags, nodeTypes } ]
  * }
  */
-export { writeNodePartials, writeStructuralPartials, extractDrupalComponents, writeDrupalComponentPartials, extractMenuData };
+export { writeNodePartials, writeStructuralPartials, extractDrupalComponents, writeDrupalComponentPartials, extractMenuData, extractBannerData, extractBreadcrumbData };
 
 export function analyzeHtmlFiles(siteSrcDir, options = {}) {
   const fileReports         = [];
@@ -687,56 +687,163 @@ function findStructuralPatternMatch(tag, attrs) {
 
 
 /**
- * Extract banner data from HTML
+ * Extract banner/hero data from HTML.
+ * Detects multiple hero patterns:
+ *  - hero-2: background-image banners (via inline style)
+ *  - hero-1: text-only banners (no background image)
+ *  - Drupal-style banners with <img> tags (covid-page-banner, hero-banner, etc.)
+ * Extracts: heroType, backgroundImage, mobileImage, h1Text, h1Link, introHTML, buttonText, buttonUrl, pcImage, mbImage
  */
 function extractBannerData(html) {
   const dom = new JSDOM(html);
   const doc = dom.window.document;
-  
-  const banner = doc.querySelector('.banner-content, .hero, [class*="covid-page-banner"], [class*="hero-banner"]');
-  if (!banner) return null;
-  
-  const pcImage = banner.querySelector('img[width="2260"], .field--name-field-media-image-1 img');
-  const mbImage = banner.querySelector('img[width="780"], .field--name-field-mobile-image img');
-  
-  return {
-    pcImage: pcImage ? pcImage.getAttribute('src') : '',
-    mbImage: mbImage ? mbImage.getAttribute('src') : '',
-    pcImageAlt: pcImage ? pcImage.getAttribute('alt') : '',
-    mbImageAlt: mbImage ? mbImage.getAttribute('alt') : ''
-  };
+
+  // Strategy 1: Look for hero sections with class patterns (hero-1, hero-2, hero, banner, etc.)
+  const heroSection = doc.querySelector(
+    '[class*="hero-"], [class*="hero "], .hero, .banner-content, [class*="covid-page-banner"], [class*="hero-banner"], [class*="site-banner"], .banner'
+  );
+  if (!heroSection) return null;
+
+  const heroClass = heroSection.getAttribute('class') || '';
+  const heroStyle = heroSection.getAttribute('style') || '';
+
+  // Detect hero type based on background-image presence
+  const bgImageMatch = heroStyle.match(/background-image\s*:\s*url\(['"]?([^'"\)]+)['"]?\)/i);
+  const hasBackgroundImage = !!bgImageMatch;
+
+  const result = {};
+
+  if (hasBackgroundImage) {
+    // Hero with background image (hero-2 pattern)
+    result.heroType = heroClass.match(/hero-\d+/)?.[0] || 'hero-2';
+    result.backgroundImage = bgImageMatch[1];
+
+    // Look for mobile image (commonly in a child div with xs-image-replace or visible-xs)
+    const mobileDiv = heroSection.querySelector('[class*="xs-image-replace"], [class*="visible-xs"][style*="background-image"]');
+    if (mobileDiv) {
+      const mbBgMatch = (mobileDiv.getAttribute('style') || '').match(/background-image\s*:\s*url\(['"]?([^'"\)]+)['"]?\)/i);
+      if (mbBgMatch) result.mobileImage = mbBgMatch[1];
+    }
+  } else {
+    // Text-only hero (hero-1 pattern) or Drupal img-based banner
+    const pcImage = heroSection.querySelector('img[width="2260"], .field--name-field-media-image-1 img, .field--name-field-banner-image img');
+    const mbImage = heroSection.querySelector('img[width="780"], .field--name-field-mobile-image img');
+    if (pcImage || mbImage) {
+      // Drupal-style banner with explicit <img> tags
+      result.heroType = heroClass.match(/hero-\d+/)?.[0] || 'banner';
+      result.pcImage = pcImage ? pcImage.getAttribute('src') : '';
+      result.mbImage = mbImage ? mbImage.getAttribute('src') : '';
+      result.pcImageAlt = pcImage ? pcImage.getAttribute('alt') : '';
+      result.mbImageAlt = mbImage ? mbImage.getAttribute('alt') : '';
+    } else {
+      result.heroType = heroClass.match(/hero-\d+/)?.[0] || 'hero-1';
+    }
+  }
+
+  // Extract h1 text and optional link
+  const h1 = heroSection.querySelector('h1');
+  if (h1) {
+    const h1Link = h1.querySelector('a[href]');
+    result.h1Text = (h1.textContent || '').trim();
+    if (h1Link) {
+      result.h1Link = h1Link.getAttribute('href');
+    }
+  }
+
+  // Extract intro text (div.intro or similar)
+  const intro = heroSection.querySelector('.intro, .hero-description, .banner-text, .hero-text');
+  if (intro) {
+    // Get innerHTML but exclude any button <a class="btn"> to capture it separately
+    const introClone = intro.cloneNode(true);
+    const btnInIntro = introClone.querySelector('a.btn, .btn');
+    if (btnInIntro) {
+      result.buttonText = (btnInIntro.textContent || '').trim();
+      result.buttonUrl = btnInIntro.getAttribute('href') || '';
+      // Remove the button's parent <p> if it only contains the button
+      const btnParent = btnInIntro.parentElement;
+      if (btnParent && btnParent.tagName === 'P' && btnParent.querySelectorAll('a').length === 1) {
+        btnParent.remove();
+      } else {
+        btnInIntro.remove();
+      }
+    }
+    // Clean up empty <p>&nbsp;</p> remnants
+    const emptyParas = introClone.querySelectorAll('p');
+    for (const p of emptyParas) {
+      if ((p.textContent || '').trim() === '' || (p.innerHTML || '').trim() === '&nbsp;') {
+        p.remove();
+      }
+    }
+    result.introHTML = introClone.innerHTML.trim();
+  }
+
+  // Only return if we found meaningful content
+  if (result.h1Text || result.introHTML || result.pcImage || result.backgroundImage) {
+    return result;
+  }
+  return null;
 }
 
 /**
- * Extract breadcrumb data from HTML
+ * Extract breadcrumb data from HTML.
+ * Handles multiple breadcrumb patterns:
+ *  - Standard <ol>/<ul> with <li> items
+ *  - Inline text breadcrumbs with <a> tags and text separators (e.g. " / ")
+ *  - Drupal breadcrumb blocks
  */
 function extractBreadcrumbData(html) {
   const dom = new JSDOM(html);
   const doc = dom.window.document;
-  
-  const breadcrumb = doc.querySelector('.breadcrumb, .breadcrumbs, [role="navigation"][aria-labelledby*="breadcrumb"]');
+
+  const breadcrumb = doc.querySelector(
+    '.breadcrumb, .breadcrumbs, [class*="breadcrumb"], ' +
+    '[role="navigation"][aria-labelledby*="breadcrumb"], ' +
+    '[role="navigation"][aria-label*="breadcrumb"], ' +
+    '#breadcrumb, #breadcrumbs, .crumbs'
+  );
   if (!breadcrumb) return null;
-  
+
   const items = [];
-  const links = breadcrumb.querySelectorAll('a, li');
-  
-  for (const item of links) {
-    if (item.tagName === 'A') {
-      items.push({
-        text: item.textContent.trim(),
-        url: item.getAttribute('href'),
-        active: false
-      });
-    } else if (item.tagName === 'LI' && !item.querySelector('a')) {
-      // Current page (no link)
-      items.push({
-        text: item.textContent.trim(),
-        url: '',
-        active: true
-      });
+
+  // Strategy 1: List-based breadcrumbs (<ol> or <ul> with <li> items)
+  const list = breadcrumb.querySelector('ol, ul');
+  if (list) {
+    const allLi = Array.from(list.querySelectorAll(':scope > li'));
+    for (const li of allLi) {
+      const link = li.querySelector('a[href]');
+      if (link) {
+        items.push({ text: link.textContent.trim(), url: link.getAttribute('href') });
+      } else {
+        const text = li.textContent.trim();
+        if (text) items.push({ text });
+      }
     }
   }
-  
+
+  // Strategy 2: Inline breadcrumbs (text nodes mixed with <a> tags, separated by " / ")
+  if (items.length === 0) {
+    // Find the deepest container with the breadcrumb text (often div.crumbs)
+    const crumbsContainer = breadcrumb.querySelector('.crumbs, .crumbs-container .crumbs') || breadcrumb;
+    const childNodes = Array.from(crumbsContainer.childNodes);
+
+    for (const node of childNodes) {
+      if (node.nodeType === 1 && node.tagName === 'A') {
+        // Element node: <a> link
+        const text = node.textContent.trim();
+        const url = node.getAttribute('href');
+        if (text) items.push({ text, url });
+      } else if (node.nodeType === 3) {
+        // Text node — split by separator and extract non-empty segments
+        const parts = node.textContent.split(/\s*\/\s*/).map(s => s.trim()).filter(Boolean);
+        for (const part of parts) {
+          // Skip common prefixes like "You are here:"
+          if (/^(you are here|du .*r h.*r|accueil|home)\s*:?$/i.test(part)) continue;
+          items.push({ text: part });
+        }
+      }
+    }
+  }
+
   return items.length > 0 ? { items } : null;
 }
 
@@ -1350,6 +1457,7 @@ function buildDynamicTabMenuPartial(outerHtml, occurrenceCount) {
 
 /**
  * Build dynamic breadcrumb partial derived from actual source HTML structure.
+ * Handles both list-based (<ol>/<ul> with <li>) and inline breadcrumbs (text + <a> tags).
  */
 function buildDynamicBreadcrumbPartial(outerHtml, occurrenceCount) {
   const header = [
@@ -1364,10 +1472,7 @@ function buildDynamicBreadcrumbPartial(outerHtml, occurrenceCount) {
     `    items:`,
     `      - text: "Home"`,
     `        url: "/"`,
-    `        active: false`,
     `      - text: "Current Page"`,
-    `        url: ""`,
-    `        active: true`,
     `*/}}`,
   ].join('\n');
 
@@ -1384,67 +1489,98 @@ function buildDynamicBreadcrumbPartial(outerHtml, occurrenceCount) {
       body.querySelector('nav ul') ||
       body.querySelector('ul');
 
-    if (!list) {
-      return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
+    if (list) {
+      // ─── List-based breadcrumb ───
+      const listTag       = list.tagName.toLowerCase();
+      const listClass     = list.getAttribute('class') || '';
+      const listClassAttr = listClass ? ` class="${listClass}"` : '';
+
+      const allLi = Array.from(list.querySelectorAll(':scope > li'));
+      if (allLi.length === 0) {
+        return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
+      }
+
+      const normalLi = allLi.find(li => li.querySelector('a'));
+      const activeLi = allLi.find(li =>
+        !li.querySelector('a') ||
+        li.className.includes('active') ||
+        li.className.includes('current')
+      );
+
+      const liBaseClass    = getBaseClasses((normalLi || allLi[0]).getAttribute('class') || '');
+      const activeModifier = activeLi
+        ? (activeLi.getAttribute('class') || '')
+            .split(' ')
+            .find(c => c.includes('active') || c.includes('current')) || ''
+        : '';
+
+      const liClassTpl = liBaseClass
+        ? (activeModifier
+            ? `class="${liBaseClass}{{ if .active }} ${activeModifier}{{ end }}"`
+            : `class="${liBaseClass}"`)
+        : `{{ if .active }}class="${activeModifier || 'active'}"{{ end }}`;
+
+      const linkEl        = (normalLi || allLi[0]).querySelector('a');
+      const linkClass     = linkEl?.getAttribute('class') || '';
+      const linkClassAttr = linkClass ? ` class="${linkClass}"` : '';
+
+      const ancestors = getAncestorChain(list, body);
+      const wrapOpen  = ancestors.map(a => serializeOpenTag(a)).join('\n');
+      const wrapClose = ancestors.slice().reverse().map(a => serializeCloseTag(a)).join('\n');
+
+      const template = [
+        `{{ $breadcrumb := . }}`,
+        `{{ if $breadcrumb.items }}`,
+        wrapOpen,
+        `<${listTag}${listClassAttr}>`,
+        `  {{ range $breadcrumb.items }}`,
+        `  <li ${liClassTpl}>`,
+        `    {{ if .url }}<a href="{{ .url }}"${linkClassAttr}>{{ .text }}</a>{{ else }}{{ .text }}{{ end }}`,
+        `  </li>`,
+        `  {{ end }}`,
+        `</${listTag}>`,
+        wrapClose,
+        `{{ end }}`,
+      ].filter(Boolean).join('\n');
+
+      return `${header}\n${template}\n`;
+    } else {
+      // ─── Inline / div-based breadcrumb ───
+      // Preserve outermost wrapper structure, replace items with dynamic range
+      const root = body.firstElementChild;
+      if (!root) return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
+
+      // Find the innermost crumbs container
+      const crumbs = root.querySelector('.crumbs, .crumbs-container .crumbs') || root;
+      const crumbsTag = crumbs.tagName.toLowerCase();
+      const crumbsClass = crumbs.getAttribute('class') || '';
+
+      // Detect link class from any <a> in the breadcrumb
+      const existingLink = crumbs.querySelector('a');
+      const linkClass = existingLink ? (existingLink.getAttribute('class') || '') : '';
+      const linkClassAttr = linkClass ? ` class="${linkClass}"` : '';
+
+      // Detect separator: look for text nodes containing "/"
+      const separator = ' / ';
+
+      // Build ancestor chain from crumbs to root
+      const ancestors = getAncestorChain(crumbs, body);
+      const wrapOpen  = ancestors.map(a => serializeOpenTag(a)).join('\n');
+      const wrapClose = ancestors.slice().reverse().map(a => serializeCloseTag(a)).join('\n');
+
+      const template = [
+        `{{ $breadcrumb := . }}`,
+        `{{ if $breadcrumb.items }}`,
+        wrapOpen,
+        `<${crumbsTag}${crumbsClass ? ` class="${crumbsClass}"` : ''}>`,
+        `  {{ range $i, $item := $breadcrumb.items }}{{ if $i }}${separator}{{ end }}{{ if .url }}<a href="{{ .url }}"${linkClassAttr}>{{ .text }}</a>{{ else }}{{ .text }}{{ end }}{{ end }}`,
+        `</${crumbsTag}>`,
+        wrapClose,
+        `{{ end }}`,
+      ].filter(Boolean).join('\n');
+
+      return `${header}\n${template}\n`;
     }
-
-    const listTag       = list.tagName.toLowerCase();
-    const listClass     = list.getAttribute('class') || '';
-    const listClassAttr = listClass ? ` class="${listClass}"` : '';
-
-    const allLi = Array.from(list.querySelectorAll(':scope > li'));
-    if (allLi.length === 0) {
-      return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
-    }
-
-    // Identify normal vs active items
-    const normalLi = allLi.find(li => li.querySelector('a'));
-    const activeLi = allLi.find(li =>
-      !li.querySelector('a') ||
-      li.className.includes('active') ||
-      li.className.includes('current')
-    );
-
-    const liBaseClass    = getBaseClasses((normalLi || allLi[0]).getAttribute('class') || '');
-    const activeModifier = activeLi
-      ? (activeLi.getAttribute('class') || '')
-          .split(' ')
-          .find(c => c.includes('active') || c.includes('current')) || ''
-      : '';
-
-    // Build the LI class template
-    const liClassTpl = liBaseClass
-      ? (activeModifier
-          ? `class="${liBaseClass}{{ if .active }} ${activeModifier}{{ end }}"`
-          : `class="${liBaseClass}"`)
-      : `{{ if .active }}class="${activeModifier || 'active'}"{{ end }}`;
-
-    // Link class
-    const linkEl        = (normalLi || allLi[0]).querySelector('a');
-    const linkClass     = linkEl?.getAttribute('class') || '';
-    const linkClassAttr = linkClass ? ` class="${linkClass}"` : '';
-
-    // Build ancestor wrapper
-    const ancestors = getAncestorChain(list, body);
-    const wrapOpen  = ancestors.map(a => serializeOpenTag(a)).join('\n');
-    const wrapClose = ancestors.slice().reverse().map(a => serializeCloseTag(a)).join('\n');
-
-    const template = [
-      `{{ $breadcrumb := . }}`,
-      `{{ if $breadcrumb.items }}`,
-      wrapOpen,
-      `<${listTag}${listClassAttr}>`,
-      `  {{ range $breadcrumb.items }}`,
-      `  <li ${liClassTpl}>`,
-      `    {{ if .url }}<a href="{{ .url }}"${linkClassAttr}>{{ .text }}</a>{{ else }}{{ .text }}{{ end }}`,
-      `  </li>`,
-      `  {{ end }}`,
-      `</${listTag}>`,
-      wrapClose,
-      `{{ end }}`,
-    ].filter(Boolean).join('\n');
-
-    return `${header}\n${template}\n`;
   } catch {
     return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
   }
@@ -1551,7 +1687,11 @@ function buildDynamicCarouselPartial(outerHtml, occurrenceCount) {
 
 /**
  * Build dynamic banner partial derived from actual source HTML structure.
- * Preserves the source site's wrapper elements; makes image src/alt dynamic.
+ * Handles multiple patterns:
+ *  - hero-2: background-image banners with mobile image, h1, intro, optional button
+ *  - hero-1: text-only banners with h1 and intro
+ *  - Drupal-style banners with <img> tags (pcImage/mbImage)
+ * Preserves the source site's wrapper elements and class names.
  */
 function buildDynamicBannerPartial(outerHtml, occurrenceCount) {
   const header = [
@@ -1561,9 +1701,16 @@ function buildDynamicBannerPartial(outerHtml, occurrenceCount) {
     `  Occurrences found: ${occurrenceCount}`,
     `  Structure derived from source HTML — adapts to any site.`,
     `  Usage: {{ partial "structures/banner.html" .Params.banner }}`,
-    `  Dynamic fields: .pcImage, .pcImageAlt (first img), .mbImage, .mbImageAlt (second img)`,
     `  Expected front matter:`,
     `  banner:`,
+    `    heroType: "hero-2"`,
+    `    backgroundImage: "/images/hero-bg.jpg"`,
+    `    mobileImage: "/images/hero-mb.jpg"`,
+    `    h1Text: "Page Title"`,
+    `    h1Link: "/optional-link"`,
+    `    introHTML: "<p>Description text</p>"`,
+    `    buttonText: "Learn More"`,
+    `    buttonUrl: "/page"`,
     `    pcImage: "/images/banner-pc.jpg"`,
     `    mbImage: "/images/banner-mb.jpg"`,
     `    pcImageAlt: "Banner description"`,
@@ -1572,28 +1719,153 @@ function buildDynamicBannerPartial(outerHtml, occurrenceCount) {
   ].join('\n');
 
   try {
-    // Escape original {{ }} FIRST, then inject Hugo vars for images
-    let html = escapeHugoDelimiters(outerHtml);
+    const dom = new JSDOM(outerHtml);
+    const doc = dom.window.document;
+    const body = doc.body;
+    const root = body.firstElementChild;
+    if (!root) return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
 
-    let imgIdx = 0;
-    html = html.replace(/<img\b([^>]*)>/gi, (match, attrs) => {
-      imgIdx++;
-      if (imgIdx === 1) {
-        return `<img${attrs
-          .replace(/\bsrc=["'][^"']*["']/, 'src="{{ .pcImage }}"')
-          .replace(/\balt=["'][^"']*["']/, 'alt="{{ .pcImageAlt }}"')
-        }>`;
-      }
-      if (imgIdx === 2) {
-        return `<img${attrs
-          .replace(/\bsrc=["'][^"']*["']/, 'src="{{ .mbImage }}"')
-          .replace(/\balt=["'][^"']*["']/, 'alt="{{ .mbImageAlt }}"')
-        }>`;
-      }
-      return match;
-    });
+    const rootClass = root.getAttribute('class') || '';
+    const rootStyle = root.getAttribute('style') || '';
+    const hasBackgroundImage = /background-image/i.test(rootStyle);
+    const hasImgTags = root.querySelector('img') !== null;
 
-    return `${header}\n{{ if . }}\n${html}\n{{ end }}\n`;
+    // Determine which template strategy to use based on source HTML
+    if (hasBackgroundImage) {
+      // ─── Hero with background-image (hero-2 style) ───
+      // Build the template preserving the source structure but making fields dynamic
+      const rootTag = root.tagName.toLowerCase();
+
+      // Find the mobile image div
+      const mobileDiv = root.querySelector('[class*="xs-image-replace"], [class*="visible-xs"][style*="background-image"]');
+      const mobileDivClass = mobileDiv ? (mobileDiv.getAttribute('class') || '') : '';
+      const mobileDivTag = mobileDiv ? mobileDiv.tagName.toLowerCase() : 'div';
+
+      // Find h1
+      const h1 = root.querySelector('h1');
+      const h1Class = h1 ? (h1.getAttribute('class') || '') : '';
+
+      // Find intro div
+      const intro = root.querySelector('.intro, .hero-description, .banner-text, .hero-text');
+      const introClass = intro ? (intro.getAttribute('class') || '') : '';
+      const introTag = intro ? intro.tagName.toLowerCase() : 'div';
+
+      // Find button
+      const btn = root.querySelector('a.btn, a[class*="btn"]');
+      const btnClass = btn ? (btn.getAttribute('class') || '') : '';
+
+      // Build ancestor chain between root and the h1/content (the right-column wrapper)
+      const contentCol = h1 ? h1.parentElement : null;
+      const contentColTag = contentCol && contentCol !== root ? contentCol.tagName.toLowerCase() : '';
+      const contentColClass = contentCol && contentCol !== root ? (contentCol.getAttribute('class') || '') : '';
+
+      // Check if there's an intermediate container (e.g. div.container)
+      const container = contentCol && contentCol.parentElement !== root && contentCol.parentElement !== body
+        ? contentCol.parentElement : null;
+      const containerTag = container ? container.tagName.toLowerCase() : '';
+      const containerClass = container ? (container.getAttribute('class') || '') : '';
+
+      const lines = [];
+      lines.push(`{{ $banner := . }}`);
+      lines.push(`{{ if $banner }}`);
+
+      // Hero-2 block (background-image)
+      lines.push(`{{ if eq $banner.heroType "hero-2" }}`);
+      lines.push(`<${rootTag} class="${rootClass}" style="background-image: url('{{ $banner.backgroundImage }}')">`);
+      if (mobileDiv) {
+        lines.push(`  <${mobileDivTag} class="${mobileDivClass}" style="background-image: url('{{ $banner.mobileImage }}')"></${mobileDivTag}>`);
+      }
+      if (container) lines.push(`  <${containerTag}${containerClass ? ` class="${containerClass}"` : ''}>`);
+      if (contentCol && contentCol !== root) {
+        lines.push(`  <${contentColTag}${contentColClass ? ` class="${contentColClass}"` : ''}>`);
+      }
+      lines.push(`    {{ if $banner.h1Link }}`);
+      lines.push(`    <h1${h1Class ? ` class="${h1Class}"` : ''}><a href="{{ $banner.h1Link }}">{{ $banner.h1Text }}</a></h1>`);
+      lines.push(`    {{ else }}`);
+      lines.push(`    <h1${h1Class ? ` class="${h1Class}"` : ''}>{{ $banner.h1Text }}</h1>`);
+      lines.push(`    {{ end }}`);
+      if (intro) {
+        lines.push(`    {{ if $banner.introHTML }}`);
+        lines.push(`    <${introTag}${introClass ? ` class="${introClass}"` : ''}>{{ $banner.introHTML | safeHTML }}</${introTag}>`);
+        lines.push(`    {{ end }}`);
+      }
+      if (btn) {
+        lines.push(`    {{ if $banner.buttonText }}`);
+        lines.push(`    <a href="{{ $banner.buttonUrl }}" class="${btnClass}">{{ $banner.buttonText }}</a>`);
+        lines.push(`    {{ end }}`);
+      }
+      if (contentCol && contentCol !== root) {
+        lines.push(`  </${contentColTag}>`);
+      }
+      if (container) lines.push(`  </${containerTag}>`);
+      lines.push(`</${rootTag}>`);
+
+      // Hero-1 fallback (text-only)
+      lines.push(`{{ else }}`);
+      lines.push(`<${rootTag} class="{{ $banner.heroType }}">`);
+      if (container) lines.push(`  <${containerTag}${containerClass ? ` class="${containerClass}"` : ''}>`);
+      lines.push(`  <h1${h1Class ? ` class="${h1Class}"` : ''}>{{ $banner.h1Text }}</h1>`);
+      lines.push(`  {{ if $banner.introHTML }}`);
+      lines.push(`  <${introTag}${introClass ? ` class="${introClass}"` : ''}>{{ $banner.introHTML | safeHTML }}</${introTag}>`);
+      lines.push(`  {{ end }}`);
+      if (container) lines.push(`  </${containerTag}>`);
+      lines.push(`</${rootTag}>`);
+      lines.push(`{{ end }}`);
+
+      lines.push(`{{ end }}`);
+
+      return `${header}\n${lines.join('\n')}\n`;
+    } else if (hasImgTags) {
+      // ─── Drupal-style banner with <img> tags ───
+      let html = escapeHugoDelimiters(outerHtml);
+      let imgIdx = 0;
+      html = html.replace(/<img\b([^>]*)>/gi, (match, attrs) => {
+        imgIdx++;
+        if (imgIdx === 1) {
+          return `<img${attrs
+            .replace(/\bsrc=["'][^"']*["']/, 'src="{{ .pcImage }}"')
+            .replace(/\balt=["'][^"']*["']/, 'alt="{{ .pcImageAlt }}"')
+          }>`;
+        }
+        if (imgIdx === 2) {
+          return `<img${attrs
+            .replace(/\bsrc=["'][^"']*["']/, 'src="{{ .mbImage }}"')
+            .replace(/\balt=["'][^"']*["']/, 'alt="{{ .mbImageAlt }}"')
+          }>`;
+        }
+        return match;
+      });
+
+      // Also make h1 dynamic if present
+      html = html.replace(/<h1([^>]*)>[\s\S]*?<\/h1>/i, (match, attrs) => {
+        return `{{ if .h1Text }}<h1${attrs}>{{ .h1Text }}</h1>{{ end }}`;
+      });
+
+      return `${header}\n{{ if . }}\n${html}\n{{ end }}\n`;
+    } else {
+      // ─── Text-only hero (hero-1 style, no images) ───
+      const rootTag = root.tagName.toLowerCase();
+      const h1 = root.querySelector('h1');
+      const h1Class = h1 ? (h1.getAttribute('class') || '') : '';
+      const intro = root.querySelector('.intro, .hero-description, .banner-text, .hero-text');
+      const introClass = intro ? (intro.getAttribute('class') || '') : '';
+      const introTag = intro ? intro.tagName.toLowerCase() : 'div';
+
+      const lines = [];
+      lines.push(`{{ $banner := . }}`);
+      lines.push(`{{ if $banner }}`);
+      lines.push(`<${rootTag} class="{{ $banner.heroType | default "${rootClass}" }}">`);
+      lines.push(`  <h1${h1Class ? ` class="${h1Class}"` : ''}>{{ $banner.h1Text }}</h1>`);
+      if (intro) {
+        lines.push(`  {{ if $banner.introHTML }}`);
+        lines.push(`  <${introTag}${introClass ? ` class="${introClass}"` : ''}>{{ $banner.introHTML | safeHTML }}</${introTag}>`);
+        lines.push(`  {{ end }}`);
+      }
+      lines.push(`</${rootTag}>`);
+      lines.push(`{{ end }}`);
+
+      return `${header}\n${lines.join('\n')}\n`;
+    }
   } catch {
     return `${header}\n${escapeHugoDelimiters(outerHtml)}\n`;
   }

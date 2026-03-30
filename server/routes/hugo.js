@@ -10,6 +10,8 @@ import {
   extractDrupalComponents,
   writeDrupalComponentPartials,
   extractMenuData,
+  extractBannerData,
+  extractBreadcrumbData,
 } from '../utils/analyzeHtml.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -780,12 +782,23 @@ function buildContentFrontMatter({ slug, title, description, abstract, bodyClass
   }
 
   // BANNER DATA
-  if (banner && (banner.pcImage || banner.mbImage)) {
-    fm += `banner:\n`;
-    if (banner.pcImage)    fm += `  pcImage: '${yml(banner.pcImage)}'\n`;
-    if (banner.mbImage)    fm += `  mbImage: '${yml(banner.mbImage)}'\n`;
-    if (banner.pcImageAlt) fm += `  pcImageAlt: '${yml(banner.pcImageAlt)}'\n`;
-    if (banner.mbImageAlt) fm += `  mbImageAlt: '${yml(banner.mbImageAlt)}'\n`;
+  if (banner) {
+    const hasContent = banner.pcImage || banner.mbImage || banner.backgroundImage || banner.h1Text;
+    if (hasContent) {
+      fm += `banner:\n`;
+      if (banner.heroType)        fm += `  heroType: '${yml(banner.heroType)}'\n`;
+      if (banner.backgroundImage) fm += `  backgroundImage: '${yml(banner.backgroundImage)}'\n`;
+      if (banner.mobileImage)     fm += `  mobileImage: '${yml(banner.mobileImage)}'\n`;
+      if (banner.h1Text)          fm += `  h1Text: '${yml(banner.h1Text)}'\n`;
+      if (banner.h1Link)          fm += `  h1Link: '${yml(banner.h1Link)}'\n`;
+      if (banner.introHTML)       fm += `  introHTML: '${yml(banner.introHTML)}'\n`;
+      if (banner.buttonText)      fm += `  buttonText: '${yml(banner.buttonText)}'\n`;
+      if (banner.buttonUrl)       fm += `  buttonUrl: '${yml(banner.buttonUrl)}'\n`;
+      if (banner.pcImage)         fm += `  pcImage: '${yml(banner.pcImage)}'\n`;
+      if (banner.mbImage)         fm += `  mbImage: '${yml(banner.mbImage)}'\n`;
+      if (banner.pcImageAlt)      fm += `  pcImageAlt: '${yml(banner.pcImageAlt)}'\n`;
+      if (banner.mbImageAlt)      fm += `  mbImageAlt: '${yml(banner.mbImageAlt)}'\n`;
+    }
   }
 
   // BREADCRUMB DATA
@@ -793,7 +806,7 @@ function buildContentFrontMatter({ slug, title, description, abstract, bodyClass
     fm += `breadcrumb:\n  items:\n`;
     for (const item of breadcrumb.items) {
       fm += `    - text: '${yml(item.text)}'\n`;
-      fm += `      url: '${yml(item.url)}'\n`;
+      if (item.url) fm += `      url: '${yml(item.url)}'\n`;
       if (item.active) fm += `      active: true\n`;
     }
   }
@@ -1368,8 +1381,19 @@ router.post('/convert', (req, res) => {
 
     // header.html — detect shared version across pages
     const rawHeader = detectSharedPartial('header', sampleHtmls) || '<header></header>';
-    fs.writeFileSync(path.join(partialsDir, 'header.html'), processHeaderPartial(rawHeader) + '\n', 'utf8');
-    logs.push(`  ✓ layouts/partials/header.html`);
+    let processedHeader = processHeaderPartial(rawHeader);
+    // Inject breadcrumb partial call before closing </header> tag
+    if (processedHeader.includes('</header>')) {
+      processedHeader = processedHeader.replace(
+        '</header>',
+        '{{ partial "structures/breadcrumb.html" .Params.breadcrumb }}\n</header>'
+      );
+    } else {
+      // If no </header> tag, append at the end
+      processedHeader += '\n{{ partial "structures/breadcrumb.html" .Params.breadcrumb }}';
+    }
+    fs.writeFileSync(path.join(partialsDir, 'header.html'), processedHeader + '\n', 'utf8');
+    logs.push(`  ✓ layouts/partials/header.html  (with breadcrumb partial call)`);
 
     // footer.html — detect shared version across pages, fix relative links
     const rawFooter = detectSharedPartial('footer', sampleHtmls) || '<footer></footer>';
@@ -1468,6 +1492,8 @@ Sitemap: {{ .Site.BaseURL }}sitemap.xml
     const { bodyClass: homeBodyClass, bodyId: homeBodyId } = extractBodyAttributes(srcHtml);
     const { screen: homePageCSS, print: homePagePrintCSS } = extractPageCSS(srcHtml);
     const homePageJS  = extractPageHeadJS(srcHtml);
+    const homeBanner     = extractBannerData(srcHtml);
+    const homeBreadcrumb = extractBreadcrumbData(srcHtml);
     const homePageTitle = (meta.pageTitle || meta.title || domain);
     // YAML single-quoted scalars: escape ' as ''
     const yml = (s) => (s || '').replace(/'/g, "''");
@@ -1486,6 +1512,35 @@ Sitemap: {{ .Site.BaseURL }}sitemap.xml
     if (homePageJS.length) {
       homeFm += `pageJS:\n`;
       for (const js of homePageJS) homeFm += `  - '${yml(js)}'\n`;
+    }
+
+    // BANNER DATA (homepage)
+    if (homeBanner) {
+      const hasContent = homeBanner.pcImage || homeBanner.mbImage || homeBanner.backgroundImage || homeBanner.h1Text;
+      if (hasContent) {
+        homeFm += `banner:\n`;
+        if (homeBanner.heroType)        homeFm += `  heroType: '${yml(homeBanner.heroType)}'\n`;
+        if (homeBanner.backgroundImage) homeFm += `  backgroundImage: '${yml(homeBanner.backgroundImage)}'\n`;
+        if (homeBanner.mobileImage)     homeFm += `  mobileImage: '${yml(homeBanner.mobileImage)}'\n`;
+        if (homeBanner.h1Text)          homeFm += `  h1Text: '${yml(homeBanner.h1Text)}'\n`;
+        if (homeBanner.h1Link)          homeFm += `  h1Link: '${yml(homeBanner.h1Link)}'\n`;
+        if (homeBanner.introHTML)       homeFm += `  introHTML: '${yml(homeBanner.introHTML)}'\n`;
+        if (homeBanner.buttonText)      homeFm += `  buttonText: '${yml(homeBanner.buttonText)}'\n`;
+        if (homeBanner.buttonUrl)       homeFm += `  buttonUrl: '${yml(homeBanner.buttonUrl)}'\n`;
+        if (homeBanner.pcImage)         homeFm += `  pcImage: '${yml(homeBanner.pcImage)}'\n`;
+        if (homeBanner.mbImage)         homeFm += `  mbImage: '${yml(homeBanner.mbImage)}'\n`;
+        if (homeBanner.pcImageAlt)      homeFm += `  pcImageAlt: '${yml(homeBanner.pcImageAlt)}'\n`;
+        if (homeBanner.mbImageAlt)      homeFm += `  mbImageAlt: '${yml(homeBanner.mbImageAlt)}'\n`;
+      }
+    }
+
+    // BREADCRUMB DATA (homepage)
+    if (homeBreadcrumb && homeBreadcrumb.items && homeBreadcrumb.items.length > 0) {
+      homeFm += `breadcrumb:\n  items:\n`;
+      for (const item of homeBreadcrumb.items) {
+        homeFm += `    - text: '${yml(item.text)}'\n`;
+        if (item.url) homeFm += `      url: '${yml(item.url)}'\n`;
+      }
     }
 
     // Add aliases for sub-path homepage
@@ -1532,6 +1587,8 @@ Sitemap: {{ .Site.BaseURL }}sitemap.xml
         const { bodyClass: langBodyClass, bodyId: langBodyId } = extractBodyAttributes(langHtml);
         const langCSS = extractPageCSS(langHtml);
         const langJS  = extractPageHeadJS(langHtml);
+        const langBanner     = extractBannerData(langHtml);
+        const langBreadcrumb = extractBreadcrumbData(langHtml);
         const langPageTitle = langMeta.pageTitle || langMeta.title || domain;
 
         let langFm = `---\ntitle: '${yml(langPageTitle)}'\ndraft: false\n`;
@@ -1545,6 +1602,33 @@ Sitemap: {{ .Site.BaseURL }}sitemap.xml
         if (langJS.length) {
           langFm += `pageJS:\n`;
           for (const js of langJS) langFm += `  - '${yml(js)}'\n`;
+        }
+        // Banner data (multilingual homepage)
+        if (langBanner) {
+          const hasContent = langBanner.pcImage || langBanner.mbImage || langBanner.backgroundImage || langBanner.h1Text;
+          if (hasContent) {
+            langFm += `banner:\n`;
+            if (langBanner.heroType)        langFm += `  heroType: '${yml(langBanner.heroType)}'\n`;
+            if (langBanner.backgroundImage) langFm += `  backgroundImage: '${yml(langBanner.backgroundImage)}'\n`;
+            if (langBanner.mobileImage)     langFm += `  mobileImage: '${yml(langBanner.mobileImage)}'\n`;
+            if (langBanner.h1Text)          langFm += `  h1Text: '${yml(langBanner.h1Text)}'\n`;
+            if (langBanner.h1Link)          langFm += `  h1Link: '${yml(langBanner.h1Link)}'\n`;
+            if (langBanner.introHTML)       langFm += `  introHTML: '${yml(langBanner.introHTML)}'\n`;
+            if (langBanner.buttonText)      langFm += `  buttonText: '${yml(langBanner.buttonText)}'\n`;
+            if (langBanner.buttonUrl)       langFm += `  buttonUrl: '${yml(langBanner.buttonUrl)}'\n`;
+            if (langBanner.pcImage)         langFm += `  pcImage: '${yml(langBanner.pcImage)}'\n`;
+            if (langBanner.mbImage)         langFm += `  mbImage: '${yml(langBanner.mbImage)}'\n`;
+            if (langBanner.pcImageAlt)      langFm += `  pcImageAlt: '${yml(langBanner.pcImageAlt)}'\n`;
+            if (langBanner.mbImageAlt)      langFm += `  mbImageAlt: '${yml(langBanner.mbImageAlt)}'\n`;
+          }
+        }
+        // Breadcrumb data (multilingual homepage)
+        if (langBreadcrumb && langBreadcrumb.items && langBreadcrumb.items.length > 0) {
+          langFm += `breadcrumb:\n  items:\n`;
+          for (const item of langBreadcrumb.items) {
+            langFm += `    - text: '${yml(item.text)}'\n`;
+            if (item.url) langFm += `      url: '${yml(item.url)}'\n`;
+          }
         }
         langFm += `---\n`;
 
@@ -1607,6 +1691,8 @@ Sitemap: {{ .Site.BaseURL }}sitemap.xml
       const { bodyClass: pageBodyClass, bodyId: pageBodyId } = extractBodyAttributes(pageHtml);
       const { screen: pageCSS, print: pagePrintCSS } = extractPageCSS(pageHtml);
       const pageJS      = extractPageHeadJS(pageHtml);
+      const pageBanner     = extractBannerData(pageHtml);
+      const pageBreadcrumb = extractBreadcrumbData(pageHtml);
 
       // Compute type and layout names based on multilingual context
       let typeSlug, layoutName;
@@ -1648,6 +1734,8 @@ Sitemap: {{ .Site.BaseURL }}sitemap.xml
           pageCSS,
           pagePrintCSS,
           pageJS,
+          banner:      pageBanner,
+          breadcrumb:  pageBreadcrumb,
           weight:      pageWeight,
         }),
         'utf8'
