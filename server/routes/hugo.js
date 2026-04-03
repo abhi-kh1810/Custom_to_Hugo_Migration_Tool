@@ -1405,15 +1405,16 @@ router.post('/convert', (req, res) => {
     // header.html — detect shared version across pages
     const rawHeader = detectSharedPartial('header', sampleHtmls) || '<header></header>';
     let processedHeader = processHeaderPartial(rawHeader);
-    // Inject breadcrumb partial call before closing </header> tag
+    // Inject breadcrumb partial call before closing </header> tag (guarded by templates.Exists)
+    const breadcrumbCall = '{{ if templates.Exists "partials/structures/breadcrumb.html" }}{{ partial "structures/breadcrumb.html" .Params.breadcrumb }}{{ end }}';
     if (processedHeader.includes('</header>')) {
       processedHeader = processedHeader.replace(
         '</header>',
-        '{{ partial "structures/breadcrumb.html" .Params.breadcrumb }}\n</header>'
+        breadcrumbCall + '\n</header>'
       );
     } else {
       // If no </header> tag, append at the end
-      processedHeader += '\n{{ partial "structures/breadcrumb.html" .Params.breadcrumb }}';
+      processedHeader += '\n' + breadcrumbCall;
     }
     fs.writeFileSync(path.join(partialsDir, 'header.html'), processedHeader + '\n', 'utf8');
     logs.push(`  ✓ layouts/partials/header.html  (with breadcrumb partial call)`);
