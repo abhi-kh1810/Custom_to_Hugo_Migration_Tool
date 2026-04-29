@@ -240,7 +240,7 @@ export default function CreateProject() {
           <div className="space-y-6">
             <div>
               <h2 className="text-xl font-semibold text-white mb-1">Project Information</h2>
-              <p className="text-surface-400 text-sm">Give your Hugo site a name and bio in brief</p>
+              <p className="text-surface-400 text-sm">Give your Hugo site a name and Bio in Brief</p>
             </div>
             <div className="space-y-4">
               <div>
@@ -263,7 +263,7 @@ export default function CreateProject() {
                 <textarea
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Add a short bio in brief for your website..."
+                  placeholder="Add a short Bio in Brief for your website..."
                   rows={3}
                   className="input-field resize-none"
                 />
