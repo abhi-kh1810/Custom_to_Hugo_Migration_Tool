@@ -177,9 +177,9 @@ export default function ProjectDetail() {
                 {status.label}
               </span>
             </div>
-            <p className="text-surface-400 mb-4">
-              {project.description || 'No description provided'}
-            </p>
+              <p className="text-surface-400 mb-4">
+                {project.description || 'No bio in brief provided'}
+              </p>
 
             {/* Stats */}
             <div className="flex flex-wrap gap-4 text-sm">
