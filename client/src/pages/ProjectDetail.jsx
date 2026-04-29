@@ -178,7 +178,7 @@ export default function ProjectDetail() {
               </span>
             </div>
             <p className="text-surface-400 mb-4">
-              {project.description || 'No description provided'}
+              {project.description || 'No bio in brief provided'}
             </p>
 
             {/* Stats */}
