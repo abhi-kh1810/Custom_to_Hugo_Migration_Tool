@@ -263,7 +263,7 @@ export default function CreateProject() {
                 <textarea
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="A short bio in brief for your website..."
+                  placeholder="A bio in brief for your website..."
                   rows={3}
                   className="input-field resize-none"
                 />
